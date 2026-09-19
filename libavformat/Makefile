@@ -555,6 +555,10 @@ OBJS-$(CONFIG_SBG_DEMUXER)               += sbgdec.o
 OBJS-$(CONFIG_SCC_DEMUXER)               += sccdec.o subtitles.o
 OBJS-$(CONFIG_SCC_MUXER)                 += sccenc.o
 OBJS-$(CONFIG_SCD_DEMUXER)               += scd.o
+OBJS-$(CONFIG_SDI_DEMUXER)               += sdidec.o sdicommon.o
+OBJS-$(CONFIG_SDI_MUXER)                 += sdienc.o sdicommon.o \
+                                            sdienc_audio.o \
+                                            sdienc_payloadid.o
 OBJS-$(CONFIG_SDNS_DEMUXER)              += sdns.o
 OBJS-$(CONFIG_SDP_DEMUXER)               += rtsp.o
 OBJS-$(CONFIG_SDR2_DEMUXER)              += sdr2.o

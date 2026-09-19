@@ -272,6 +272,88 @@ ffmpeg -i test.avi -f decklink -pix_fmt uyvy422 -s 720x486 -r 24000/1001 'DeckLi
 
 @end itemize
 
+@section dektec
+
+Output device for DekTec hardware.
+
+DekTec devices are identified by their serial number and port number
+(e.g. 2178000409:5). If no port is specified, port 1 is used.
+
+@subsection Options
+
+@table @option
+
+@item url[:stream_specifier]
+Specify the URL for a video stream (@var{stream_specifier} is 'v') or audio
+stream (@var{stream_specifier} is 'a').
+
+@item aspp
+Set the number of audio samples per RTP packet. Default is 48. Minimum value
+is 1. Maximum value depends on the audio properties. Common values are 6 and 48.
+
+@item pf
+Specify the pixel format. Available values are:
+
+@table @samp
+@item auto
+The default, use the pixel format from the video stream.
+@item 8
+Force 8-bit video output.
+@item 10
+Force 10-bit video output.
+@end table
+
+Automatic pixel format conversion is done to get the right pixel format for the
+hardware.
+
+@item pm
+Set the SMPTE-2110 packing mode. Available values are:
+
+@table @samp
+@item block
+@item line
+@item general
+@end table
+
+Default is @option{block}.
+
+@item sch
+Set the SMPTE-2110 scheduling mode. Available values are:
+
+@table @samp
+@item gapped
+@item linear
+@end table
+
+Default is @option{gapped}.
+
+@item ps
+Specify the RTP payload size. Default is -1 and automatically sizes the RTP
+packets. Allowed range is from 1 to 1440.
+
+@item pt
+Specify the RTP payload type. Default is 96. Allowed range is from 96 to 127.
+
+@end table
+
+@subsection Examples
+
+@itemize
+
+@item
+Playout an MPEG transport stream via a DTA-2110 (port 1):
+@example
+ffmpeg -i input.ts -url:v 239.0.0.5:5678  -url:a 239.0.0.6:5680 -f dektec -o 211000054
+@end example
+
+@item
+Playout an MPEG transport stream via a DTA-2178 port 3:
+@example
+ffmpeg -i input.ts -f dektec -o 217800024:3
+@end example
+
+@end itemize
+
 @section fbdev
 
 Linux framebuffer output device.

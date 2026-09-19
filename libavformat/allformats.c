@@ -426,6 +426,8 @@ extern const FFInputFormat  ff_sbg_demuxer;
 extern const FFInputFormat  ff_scc_demuxer;
 extern const FFOutputFormat ff_scc_muxer;
 extern const FFInputFormat  ff_scd_demuxer;
+extern const FFInputFormat  ff_sdi_demuxer;
+extern const FFOutputFormat ff_sdi_muxer;
 extern const FFInputFormat  ff_sdns_demuxer;
 extern const FFInputFormat  ff_sdp_demuxer;
 extern const FFInputFormat  ff_sdr2_demuxer;
