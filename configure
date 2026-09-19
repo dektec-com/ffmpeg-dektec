@@ -3938,6 +3938,7 @@ rtsp_muxer_select="rtp_muxer http_protocol rtp_protocol rtpenc_chain"
 sap_demuxer_select="sdp_demuxer"
 sap_muxer_select="rtp_muxer rtp_protocol rtpenc_chain"
 sdi_demuxer_select="wrapped_avframe_decoder"
+sdi_muxer_deps="swscale"
 sdi_muxer_select="wrapped_avframe_encoder"
 sdp_demuxer_select="rtpdec"
 smoothstreaming_muxer_select="ismv_muxer"
@@ -3982,7 +3983,7 @@ decklink_outdev_suggest="libklvanc"
 decklink_outdev_extralibs="-lstdc++"
 dektec_indev_deps="libcdtapi"
 dektec_indev_select="sdi_demuxer udp_protocol"
-dektec_outdev_deps="libcdtapi"
+dektec_outdev_deps="libcdtapi swscale"
 dektec_outdev_select="sdi_muxer udp_protocol"
 dshow_indev_deps="IBaseFilter"
 dshow_indev_extralibs="-lpsapi -lole32 -lstrmiids -luuid -loleaut32 -lshlwapi"
@@ -8325,8 +8326,11 @@ enabled uspp_filter         && prepend avfilter_deps "avcodec"
 enabled zoompan_filter      && prepend avfilter_deps "swscale"
 
 enabled lavfi_indev         && prepend avdevice_deps "avfilter"
+enabled dektec_outdev       && prepend avdevice_deps "swscale"
 
 enabled opus_decoder    && prepend avcodec_deps "swresample"
+
+enabled sdi_muxer       && prepend avformat_deps "swscale"
 
 # reorder the items at var $1 to align with the items order at var $2 .
 # die if an item at $1 is not at $2 .
