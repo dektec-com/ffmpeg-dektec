@@ -528,6 +528,7 @@ static int inpchannel_read_header(AVFormatContext *s)
     return 1;
 }
 
+// Waits for a frame and returns it, unless the application asked not to block or to stop.
 static int inpchannel_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
     DekTecDemuxContext *context = (DekTecDemuxContext *)s->priv_data;
@@ -537,61 +538,73 @@ static int inpchannel_read_packet(AVFormatContext *s, AVPacket *pkt)
     unsigned int result = 0;
     int value = 0;
     int sub_value = 0;
+    int ret = 0;
 
-    result = DtInpChannel_DetectIoStd(context->input, &value, &sub_value);
-    if (result == DTAPI_E_INVALID_VIDSTD && context->has_signal) {
-        TIMED_LOG(s, AV_LOG_WARNING, "SDI signal lost\n");
-        context->has_signal = 0;
-        context->signal_lost_ts = av_gettime();
-    }
-    else if (result != DTAPI_E_INVALID_VIDSTD && !context->has_signal) {
-        TIMED_LOG(s, AV_LOG_WARNING,
-                  "SDI signal re-acquired after %" PRId64 "ms\n",
-                  (av_gettime() - context->signal_lost_ts) / 1000);
-        context->has_signal = 1;
-    }
+    for (;;) {
+        int has_packet = 0;
 
-    if (!context->has_signal) {
-        av_usleep(5000);
-        return 1;
-    }
+        result = DtInpChannel_DetectIoStd(context->input, &value, &sub_value);
+        if (result == DTAPI_E_INVALID_VIDSTD && context->has_signal) {
+            TIMED_LOG(s, AV_LOG_WARNING, "SDI signal lost\n");
+            context->has_signal = 0;
+            context->signal_lost_ts = av_gettime();
+        }
+        else if (result != DTAPI_E_INVALID_VIDSTD && !context->has_signal) {
+            TIMED_LOG(s, AV_LOG_WARNING,
+                      "SDI signal re-acquired after %" PRId64 "ms\n",
+                      (av_gettime() - context->signal_lost_ts) / 1000);
+            context->has_signal = 1;
+        }
 
-    result = DtInpChannel_GetFifoLoad(context->input, &fifo_load);
-    if (result != DTAPI_OK) {
-        av_log(s, AV_LOG_ERROR, "Could not get fifo load from DtInpChannel\n");
-        return -1;
-    }
+        if (context->has_signal) {
+            result = DtInpChannel_GetFifoLoad(context->input, &fifo_load);
+            if (result != DTAPI_OK) {
+                av_log(s, AV_LOG_ERROR, "Could not get fifo load from DtInpChannel\n");
+                return AVERROR(EIO);
+            }
 
-    if (fifo_load >= context->avio_buffer_size) {
-        av_read_frame(context->format_context, pkt);
-        if (context->frame_count == 0 && context->timestamp_align) {
-            AVRational remainder = av_make_q(av_gettime() % context->timestamp_align, 1000000);
-            AVRational frame_duration = av_inv_q(av_sdi_rate(context->sdi_info->picture_rate));
-            if (av_cmp_q(remainder, frame_duration) > 0) {
-                context->dropped++;
-                av_packet_unref(pkt);
-                return 1;
+            if (fifo_load >= context->avio_buffer_size) {
+                ret = av_read_frame(context->format_context, pkt);
+                if (ret < 0)
+                    return ret;
+                has_packet = 1;
+                if (context->frame_count == 0 && context->timestamp_align) {
+                    AVRational remainder = av_make_q(av_gettime() % context->timestamp_align, 1000000);
+                    AVRational frame_duration = av_inv_q(av_sdi_rate(context->sdi_info->picture_rate));
+                    if (av_cmp_q(remainder, frame_duration) > 0) {
+                        context->dropped++;
+                        av_packet_unref(pkt);
+                        has_packet = 0;
+                    }
+                }
+                if (has_packet)
+                    context->frame_count++;
+            }
+
+            result = DtInpChannel_GetFlags(context->input, &flags, &latched);
+            if (result != DTAPI_OK) {
+                av_log(s, AV_LOG_ERROR, "Could not get flags from DtInpChannel\n");
+                return AVERROR(EIO);
+            }
+            if ((latched & DTAPI_RX_FIFO_OVF) != 0) {
+                TIMED_LOG(s, AV_LOG_WARNING, "FIFO overflow detected\n");
+                context->total_overflows++;
+            }
+            result = DtInpChannel_ClearFlags(context->input, latched);
+            if (result != DTAPI_OK) {
+                av_log(s, AV_LOG_ERROR, "Could not clear flags for DtInpChannel\n");
+                return AVERROR(EIO);
             }
         }
-        context->frame_count++;
-    }
 
-    result = DtInpChannel_GetFlags(context->input, &flags, &latched);
-    if (result != DTAPI_OK) {
-        av_log(s, AV_LOG_ERROR, "Could not get flags from DtInpChannel\n");
-        return -1;
+        if (has_packet)
+            return 0;
+        if (s->flags & AVFMT_FLAG_NONBLOCK)
+            return AVERROR(EAGAIN);
+        if (interrupted(s))
+            return AVERROR_EXIT;
+        av_usleep(context->has_signal ? 1000 : 5000);
     }
-    if ((latched & DTAPI_RX_FIFO_OVF) != 0) {
-        TIMED_LOG(s, AV_LOG_WARNING, "FIFO overflow detected\n");
-        context->total_overflows++;
-    }
-    result = DtInpChannel_ClearFlags(context->input, latched);
-    if (result != DTAPI_OK) {
-        av_log(s, AV_LOG_ERROR, "Could not clear flags for DtInpChannel\n");
-        return -1;
-    }
-
-    return 1;
 }
 
 static int inpchannel_read_close(AVFormatContext *s)
@@ -1133,7 +1146,7 @@ static int avfifo_read_video(AVFormatContext *s, AvFifo_RxFifo *fifo,
             }
             context->field0 = frame; // Keep field
             context->last_field = frame->Field;
-            return 1;
+            return FFERROR_REDO;
         }
         if (frame->Field == 1 && context->field0 == NULL) {
             result = AvFifo_RxFifo_ReturnToMemPool(fifo, frame);
@@ -1143,7 +1156,7 @@ static int avfifo_read_video(AVFormatContext *s, AvFifo_RxFifo *fifo,
                 return -1;
             }
             context->last_field = frame->Field;
-            return 1;
+            return FFERROR_REDO;
         }
 
         pts = avfifo_read_pts_video(frame);
@@ -1201,7 +1214,7 @@ static int avfifo_read_video(AVFormatContext *s, AvFifo_RxFifo *fifo,
             av_log(s, AV_LOG_ERROR, "Could not return to memory pool: %s\n", message);
             return -1;
         }
-        return 1;
+        return 0;
     }
 
     return AVERROR(EAGAIN);
@@ -1264,7 +1277,7 @@ static int avfifo_read_audio(AVFormatContext *s, AvFifo_RxFifo *fifo,
                 av_log(s, AV_LOG_ERROR, "Could not return to memory pool: %s\n", message);
                 return -1;
             }
-            return 1;
+            return 0;
         }
 
         free_space = (int)av_fifo_can_write(context->audio_buffer);
@@ -1292,7 +1305,7 @@ static int avfifo_read_audio(AVFormatContext *s, AvFifo_RxFifo *fifo,
                        message);
                 return -1;
             }
-            return 1;
+            return 0;
         } else {
             av_fifo_write(context->audio_buffer, frame->Data,
                           frame->NumValidBytes);
