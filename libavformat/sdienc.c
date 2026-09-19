@@ -387,7 +387,7 @@ static void write_sdi_header(struct AVFormatContext *s, SdiMuxContext *sdi)
 {
     struct SdiFileHeader hdr;
     PutBitContext pb;
-    uint8_t buffer[1024];
+    uint8_t buffer[1024] = { 0 };
     
     hdr = make_sdi_file_header(s, sdi);
 
