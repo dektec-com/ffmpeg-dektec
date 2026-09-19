@@ -42,8 +42,8 @@
 #include "libavutil/x86/cpu.h"
 #include "libavutil/avstring.h"
 
-#include "CDTAPI.h"
-#include "CDTAPI_AvFifo.h"
+#include "cdtapi.h"
+#include "cdtapi_avfifo.h"
 
 #include <emmintrin.h> // SSE2 intrinsics
 #include <immintrin.h> // Other intrinsics
@@ -417,7 +417,7 @@ static int inpchannel_read_header(AVFormatContext *s)
 
     av_log(s, AV_LOG_DEBUG, "io_standard=%d\n", io_standard);
     av_log(s, AV_LOG_DEBUG, "sub_value=%d\n", sub_value);
-    result = DtInpChannel_SetIoConfig(context->input, 1, io_standard, sub_value);
+    result = DtInpChannel_SetIoConfig(context->input, 1, io_standard, sub_value, -1, -1);
     if (result != DTAPI_OK) {
         av_log(s, AV_LOG_ERROR, "Could not set IO config: %s\n", DtapiResult2Str(result));
         return -1;

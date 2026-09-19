@@ -40,8 +40,8 @@
 #include "libswscale/swscale.h"
 #include "libswscale/swscale_internal.h"
 
-#include "CDTAPI.h"
-#include "CDTAPI_AvFifo.h"
+#include "cdtapi.h"
+#include "cdtapi_avfifo.h"
 
 #include <emmintrin.h> // SSE2 intrinsics
 #include <immintrin.h> // Other intrinsics
@@ -581,7 +581,7 @@ static int outpchannel_write_header(AVFormatContext *s)
         return -1;
     }
 
-    result = DtOutpChannel_SetIoConfig(context->output, 1, io_standard, sub_value);
+    result = DtOutpChannel_SetIoConfig(context->output, 1, io_standard, sub_value, -1, -1);
     if (result != DTAPI_OK) {
         av_log(s, AV_LOG_ERROR, "Could not set IO config\n");
         return -1;
