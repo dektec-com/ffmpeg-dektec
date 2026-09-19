@@ -728,13 +728,18 @@ static int outpchannel_write_trailer(AVFormatContext *s)
 
     av_write_trailer(context->format_context);
 
-    result = DtOutpChannel_SetTxControl(context->output, DTAPI_TXCTRL_IDLE);
-    if (result != DTAPI_OK) {
-        av_log(s, AV_LOG_ERROR, "Could not set TX control to IDLE\n");
-        return -1;
+    // A stream shorter than the preload has not started going out yet.
+    if (context->is_preloading) {
+        result = DtOutpChannel_SetTxControl(context->output, DTAPI_TXCTRL_SEND);
+        if (result != DTAPI_OK) {
+            av_log(s, AV_LOG_ERROR, "Could not set TX control to SEND\n");
+            return -1;
+        }
+        context->is_preloading = 0;
     }
 
-    result = DtOutpChannel_Detach(context->output, 1);
+    // Sends what the FIFO still holds before the channel stops.
+    result = DtOutpChannel_Detach(context->output, DTAPI_WAIT_UNTIL_SENT);
     if (result != DTAPI_OK) {
         av_log(s, AV_LOG_ERROR, "Could not detach from DtOutpChannel\n");
         return -1;
