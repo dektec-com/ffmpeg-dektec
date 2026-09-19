@@ -96,6 +96,7 @@ typedef struct DekTecDemuxContext {
     int frame_size;
     char *option_standard;
     int64_t timestamp_align;
+    int64_t signal_timeout;         // How long to wait for a signal; negative: no limit
     int has_signal;
     int64_t signal_lost_ts;
     DtDetVidStd detected_standard;
@@ -368,7 +369,26 @@ static int inpchannel_read_header(AVFormatContext *s)
         return -1;
     }
 
-    context->detected_standard = DtDevice_WaitForSignal(context->device, context->port);
+    // Waits a tenth of a second at a time, so that the application can stop it.
+    int64_t wait_start = av_gettime_relative();
+    for (;;) {
+        result = DtDevice_WaitForSignalTimeout(context->device, context->port, 100,
+                                               &context->detected_standard);
+        if (result == DTAPI_OK)
+            break;
+        if (result != DTAPI_E_TIMEOUT) {
+            av_log(s, AV_LOG_ERROR, "Could not detect a signal on port %d [%s]\n",
+                   context->port, DtapiResult2Str(result));
+            return AVERROR(EIO);
+        }
+        if (interrupted(s))
+            return AVERROR_EXIT;
+        if (context->signal_timeout >= 0 &&
+            av_gettime_relative() - wait_start >= context->signal_timeout) {
+            av_log(s, AV_LOG_ERROR, "No signal on port %d\n", context->port);
+            return AVERROR(ETIMEDOUT);
+        }
+    }
     av_log(s, AV_LOG_DEBUG, "Detected standard:\n");
     av_log(s, AV_LOG_DEBUG, "  VidStd=%d\n", context->detected_standard.VidStd);
     av_log(s, AV_LOG_DEBUG, "  LinkStd=%d\n", context->detected_standard.LinkStd);
@@ -1565,6 +1585,7 @@ static int ff_dektec_list_input_devices(AVFormatContext *s, struct AVDeviceInfoL
 static const AVOption options[] = {
     { "sdi_standard", "", OFFSET(option_standard), AV_OPT_TYPE_STRING, {.str = ""}, 0, 0, AV_OPT_FLAG_DECODING_PARAM, NULL},
     { "timestamp_align", "capture start time alignment (in seconds)", OFFSET(timestamp_align), AV_OPT_TYPE_DURATION, { .i64 = 0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM, NULL},
+    { "signal_timeout", "how long to wait for an SDI signal, negative without limit", OFFSET(signal_timeout), AV_OPT_TYPE_DURATION, { .i64 = 5000000 }, -INT64_MAX, INT64_MAX, AV_OPT_FLAG_DECODING_PARAM, NULL},
 
     { "pt",   "RTP payload type", OFFSET(pt),    AV_OPT_TYPE_INT, {.i64 = 96}, 96, 127, AV_OPT_FLAG_DECODING_PARAM, NULL},
 
