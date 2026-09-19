@@ -31,7 +31,7 @@
 #define AVFORMAT_SDICOMMON_H
 
 #include "avformat.h"
-#include "libavcodec/packet_internal.h"
+#include "packet_internal.h"
 #include "libavutil/fifo.h"
 #include "libavutil/rational.h"
 

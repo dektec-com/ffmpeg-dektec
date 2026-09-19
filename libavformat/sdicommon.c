@@ -28,7 +28,7 @@
  */
 
 #include "sdicommon.h"
-#include "libavcodec/packet_internal.h"
+#include "packet_internal.h"
 #include "libavutil/fifo.h"
 #include "libavutil/mem.h"
 #include "libavutil/rational.h"
@@ -175,7 +175,7 @@ void ff_sdi_buffer_free(SdiBuffer *buffer)
 {
     if (buffer) {
         if (buffer->queue) {
-            avpriv_packet_list_free(buffer->queue);
+            ff_packet_list_free(buffer->queue);
             av_freep(&buffer->queue);
         }
         
@@ -194,7 +194,7 @@ void ff_sdi_buffer_freep(SdiBuffer **buffer)
 
 int ff_sdi_buffer_add(SdiBuffer *buffer, AVPacket *pkt)
 {
-    int result = avpriv_packet_list_put(buffer->queue, pkt, av_packet_ref, 0);
+    int result = ff_packet_list_put(buffer->queue, pkt, av_packet_ref, 0);
     if (result == 0) {
         buffer->last_pts = pkt->pts;
         buffer->last_duration = pkt->duration;
@@ -260,7 +260,7 @@ int ff_sdi_buffer_get_audio(SdiBuffer *buffer, void *dest, int dest_size, int64_
             int fifo_end = buffer->fifo_pts + fifo_samples;
             if (pktl->pkt.pts == fifo_end) {
                 AVPacket pkt;
-                avpriv_packet_list_get(buffer->queue, &pkt);
+                ff_packet_list_get(buffer->queue, &pkt);
                 av_fifo_write(buffer->fifo, pkt.data, pkt.size);
                 fifo_samples += pkt.duration;
                 av_packet_unref(&pkt);
@@ -274,7 +274,7 @@ int ff_sdi_buffer_get_audio(SdiBuffer *buffer, void *dest, int dest_size, int64_
                 dest = (char*)dest + bytes;
                 dest_size -= bytes;
 
-                avpriv_packet_list_get(buffer->queue, &pkt);
+                ff_packet_list_get(buffer->queue, &pkt);
                 av_fifo_write(buffer->fifo, pkt.data, pkt.size);
                 fifo_samples += pkt.duration;
                 av_packet_unref(&pkt);
@@ -310,11 +310,11 @@ int ff_sdi_buffer_get_video(SdiBuffer *buffer, AVPacket *pkt, int64_t pts, int64
     pktl = buffer->queue->head;
     while (pktl) {
         if (pktl->pkt.pts == pts && pktl->pkt.duration == duration)
-            return avpriv_packet_list_get(buffer->queue, pkt);
+            return ff_packet_list_get(buffer->queue, pkt);
         else if (pktl->pkt.pts >= pts && pktl->pkt.pts < (pts + duration))
-            return avpriv_packet_list_get(buffer->queue, pkt);
+            return ff_packet_list_get(buffer->queue, pkt);
 
-        avpriv_packet_list_get(buffer->queue, pkt);
+        ff_packet_list_get(buffer->queue, pkt);
         av_packet_unref(pkt);
         pktl = buffer->queue->head;
     }
