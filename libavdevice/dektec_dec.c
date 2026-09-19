@@ -45,8 +45,14 @@
 #include "cdtapi.h"
 #include "cdtapi_avfifo.h"
 
+#include "config.h"
+#if HAVE_INTRINSICS_SSE2
 #include <emmintrin.h> // SSE2 intrinsics
 #include <immintrin.h> // Other intrinsics
+#if defined(__GNUC__)
+#pragma GCC target("ssse3")
+#endif
+#endif
 
 #include <time.h>
 
@@ -55,8 +61,6 @@
 #define MAX_STREAMS MAX_AUDIO_STREAMS + MAX_VIDEO_STREAMS
 
 #define AD_FRAMES_AUDIO 1001
-
-#pragma GCC target("ssse3")
 
 typedef struct AudioFormat {
     int sample_rate;
@@ -162,6 +166,7 @@ static int read_packet(void *opaque, uint8_t *frame, int frame_size)
     return frame_size;
 }
 
+#if HAVE_INTRINSICS_SSE2
 // Load 8 packed 10-bit symbols (80 bits) and unpack each symbol to it's own
 // 16-bit word (128 bits)
 static __m128i load_and_unpack(const uint8_t *input)
@@ -177,8 +182,14 @@ static __m128i load_and_unpack(const uint8_t *input)
     symbols = _mm_srli_epi16(symbols, 6);
     return symbols;
 }
+#endif
+
+// Unpacks a line of 10-bit symbols, packed least significant bit first in the order
+// U Y V Y, into planes: with SSSE3 eight pixels at a time, and the rest, or all without
+// SSSE3, two pixels, four symbols in five bytes, at a time.
 static void read_10b_packed_line(const uint8_t *src, uint16_t *dst_y, uint16_t *dst_u, uint16_t *dst_v, int width)
 {
+#if HAVE_INTRINSICS_SSE2
     int cpu_flags = av_get_cpu_flags();
     if (X86_SSSE3(cpu_flags)) {
         while (width >= 8) {
@@ -205,6 +216,17 @@ static void read_10b_packed_line(const uint8_t *src, uint16_t *dst_y, uint16_t *
 
             #undef Z
         }
+    }
+#endif
+    while (width >= 2) {
+        uint64_t bits = (uint64_t)src[0] | (uint64_t)src[1] << 8 | (uint64_t)src[2] << 16 |
+                        (uint64_t)src[3] << 24 | (uint64_t)src[4] << 32;
+        *dst_u++ = bits & 0x3FF;
+        *dst_y++ = bits >> 10 & 0x3FF;
+        *dst_v++ = bits >> 20 & 0x3FF;
+        *dst_y++ = bits >> 30 & 0x3FF;
+        src += 5;
+        width -= 2;
     }
 }
 

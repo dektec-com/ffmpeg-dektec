@@ -49,8 +49,14 @@
 #include <unistd.h>
 #endif
 
+#include "config.h"
+#if HAVE_INTRINSICS_SSE2
 #include <emmintrin.h> // SSE2 intrinsics
 #include <immintrin.h> // Other intrinsics
+#if defined(__GNUC__)
+#pragma GCC target("ssse3")
+#endif
+#endif
 
 // Diagnostic flags
 #define SDI_PARSE_WHOLE_ANC       (0) // Set to 1 to accept gaps between ANC pkts
@@ -67,8 +73,6 @@
 
 #define VIDEO_STREAM_ID 0
 #define AUDIO_STREAM_ID 1
-
-#pragma GCC target("ssse3")
 
 /*
  * Demux context for a single audio channel
@@ -557,6 +561,7 @@ static void to_planar(const uint16_t *in, uint16_t *py, uint16_t *pu,
             py += 4; py2 += 4;
         }
     } else {
+#if HAVE_INTRINSICS_SSE2
         int cpu_flags = av_get_cpu_flags();
         if (X86_SSSE3(cpu_flags)) {
             while (width >= 8) {
@@ -585,6 +590,7 @@ static void to_planar(const uint16_t *in, uint16_t *py, uint16_t *pu,
                 #undef Z
             }
         }
+#endif
         while (width > 0)
         {
             width -= 2; // do 2 pixels
@@ -606,7 +612,6 @@ static int read_to16(AVIOContext *pb, SDIDemuxContext *sdi, int nr_syms)
     uint8_t *pin = sdi->line_buf_packed;
     uint16_t *pout = sdi->line_buf;
     const int mask = (1 << 10) - 1;
-    int cpu_flags = av_get_cpu_flags();
 
     // Read packed symbols
     nr_bytes = (nr_syms * 10 + sdi->bit_pos + 7) >> 3;
@@ -620,7 +625,8 @@ static int read_to16(AVIOContext *pb, SDIDemuxContext *sdi, int nr_syms)
     }
 
     // Convert 10-bit packed to 16-bit
-    if (X86_SSSE3(cpu_flags)) {
+#if HAVE_INTRINSICS_SSE2
+    if (X86_SSSE3(av_get_cpu_flags())) {
         __m128i mask10_to16 = _mm_set_epi16(~0x3F, 0x3FF0, 0xFFC, 0x3FF, ~0x3F, 0x3FF0, 0xFFC, 0x3FF);
         __m128i mult10_to16 = _mm_set_epi16(1, 4, 16, 64, 1, 4, 16, 64);
         __m128i shuf10_to16 = _mm_set_epi8(9, 8, 8, 7, 7, 6, 6, 5, 4, 3, 3, 2, 2, 1, 1, 0);
@@ -637,6 +643,7 @@ static int read_to16(AVIOContext *pb, SDIDemuxContext *sdi, int nr_syms)
             nr_syms -= 8;
         }
     }
+#endif
     while (nr_syms--) {
         *pout++ = (*(uint32_t*)pin >> sdi->bit_pos) & mask;
         sdi->bit_pos += 10;
