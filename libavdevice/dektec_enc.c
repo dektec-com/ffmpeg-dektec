@@ -133,12 +133,12 @@ static const AVOption options[] = {
     { "url:a",   "Destination IP or hostname and port", OFFSET(url_a[0]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
     { "url:a:0", "Destination IP or hostname and port", OFFSET(url_a[0]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
     { "url:a:1", "Destination IP or hostname and port", OFFSET(url_a[1]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
-    { "url:a:2", "Destination IP or hostname and port", OFFSET(url_a[1]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
-    { "url:a:3", "Destination IP or hostname and port", OFFSET(url_a[1]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
-    { "url:a:4", "Destination IP or hostname and port", OFFSET(url_a[1]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
-    { "url:a:5", "Destination IP or hostname and port", OFFSET(url_a[1]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
-    { "url:a:6", "Destination IP or hostname and port", OFFSET(url_a[1]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
-    { "url:a:7", "Destination IP or hostname and port", OFFSET(url_a[1]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
+    { "url:a:2", "Destination IP or hostname and port", OFFSET(url_a[2]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
+    { "url:a:3", "Destination IP or hostname and port", OFFSET(url_a[3]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
+    { "url:a:4", "Destination IP or hostname and port", OFFSET(url_a[4]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
+    { "url:a:5", "Destination IP or hostname and port", OFFSET(url_a[5]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
+    { "url:a:6", "Destination IP or hostname and port", OFFSET(url_a[6]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
+    { "url:a:7", "Destination IP or hostname and port", OFFSET(url_a[7]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
 
     { NULL },
 };
