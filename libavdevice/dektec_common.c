@@ -33,8 +33,8 @@
 #include "libavutil/bswap.h"
 #include "libavutil/mem.h"
 #include "libavformat/ip.h"
-#include "CDTAPI.h"
-#include "CDTAPI_AvFifo.h"
+#include "cdtapi.h"
+#include "cdtapi_avfifo.h"
 
 static const int sdi_fmt_to_vidstd[SDI_FMT_NB] = {
     [SDI_FMT_625I50] = DTAPI_VIDSTD_625I50,
