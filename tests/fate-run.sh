@@ -207,6 +207,42 @@ md5(){
     do_md5sum $encfile | awk '{print $1}'
 }
 
+# A path for an environment variable, which MSYS2 does not translate for a Windows
+# program as it translates its arguments.
+dektec_env_path(){
+    p=$(target_path $1)
+    command -v cygpath >/dev/null 2>&1 && p=$(cygpath -m "$p")
+    echo "$p"
+}
+
+# DekTec's devices on CDTAPI's emulated DTA-2178, serial 9217800001, which sends to and
+# receives from files. dektec_sdi_out PORT ARGS... sends ARGS' output through port PORT
+# and gives the md5 of what the port sent.
+dektec_sdi_out(){
+    port=$1
+    shift
+    sinkfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $sinkfile"
+    rm -f $sinkfile
+    CDTAPI_SIM=1 CDTAPI_SIM_SDI_SINK=$port:$(dektec_env_path $sinkfile) \
+        ffmpeg "$@" -f dektec 9217800001:$port || return
+    do_md5sum $sinkfile | awk '{print $1}'
+}
+
+# dektec_sdi_in VIDSTD FRAMES ARGS... makes frames of the video standard VIDSTD, a
+# DTAPI_VIDSTD_ name, from ARGS with the sdi muxer, plays them on port 1 and gives the
+# framemd5 of the first FRAMES video frames port 1 receives, and the audio with them.
+dektec_sdi_in(){
+    vidstd=$1
+    frames=$2
+    shift 2
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    ffmpeg -y "$@" -bitexact -f sdi -no_header 1 $(target_path $srcfile) || return
+    CDTAPI_SIM=1 CDTAPI_SIM_SDI_SOURCE=1:$vidstd:$(dektec_env_path $srcfile) \
+        framemd5 -f dektec -i 9217800001:1 -frames:v $frames -map 0 -c:v rawvideo -c:a pcm_s24le
+}
+
 pcm(){
     ffmpeg -auto_conversion_filters "$@" -vn -f s16le -
 }
