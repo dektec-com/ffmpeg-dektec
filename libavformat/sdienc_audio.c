@@ -180,11 +180,6 @@ int ff_sdi_audio_init(SdiAudio *audio, AVFormatContext *s, int option_nr_ch,
         audio->nr_ch = par->ch_layout.nb_channels;
     else
         audio->nr_ch = option_nr_ch;
-    if (audio->nr_ch >
-        ff_sdi_max_audio_channels(sdi_info->payload_format, audio->nr_ch)) {
-        av_log(s, AV_LOG_ERROR, "Max number of audio channels exceeded\n");
-        return AVERROR(EINVAL);
-    }
     if (par->codec_id == AV_CODEC_ID_PCM_S24LE ||
         par->codec_id == AV_CODEC_ID_PCM_S32LE) {
         audio->bits_per_sample = av_get_bits_per_sample(par->codec_id);
@@ -199,6 +194,11 @@ int ff_sdi_audio_init(SdiAudio *audio, AVFormatContext *s, int option_nr_ch,
     } else {
         av_log(s, AV_LOG_ERROR, "Unsupported sample rate %d\n",
                par->sample_rate);
+        return AVERROR(EINVAL);
+    }
+    if (audio->nr_ch >
+        ff_sdi_max_audio_channels(sdi_info->payload_format, audio->rate)) {
+        av_log(s, AV_LOG_ERROR, "Max number of audio channels exceeded\n");
         return AVERROR(EINVAL);
     }
 
