@@ -458,6 +458,77 @@ ffmpeg -channels 16 -format_code Hi50 -f decklink -i 'UltraStudio Mini Recorder'
 
 @end itemize
 
+@section dektec
+
+Input device for DekTec hardware.
+
+DekTec devices are identified by their serial number and port number
+(e.g. 2178000409:5). If no port is specified, port 1 is used.
+
+@subsection Options
+
+@table @option
+
+@item url[:stream_specifier]
+Specify the URL for a video stream (@var{stream_specifier} is 'v') or audio
+stream (@var{stream_specifier} is 'a').
+
+@item sample_rate
+Specify the audio samplerate. Available values are:
+
+@table @samp
+@item 32000
+32 kHz.
+@item 44100
+44.1 kHz.
+@item 48000
+48 kHz.
+@item 96000
+96 kHz.
+@end table
+
+@item bps
+Specify the audio bit depth per sample. Allowed values are 16 and 24.
+
+@item n_channels
+Specify the number of audio channels. Allowed range is from 1 to 64.
+
+@item sdi_standard
+Force a specific SDI standard. Otherwise the standard will automatically be
+deduced from the video input parameters.
+
+@end table
+
+@subsection Examples
+
+@itemize
+
+@item
+Receive a video stream with a DTA-2110:
+@example
+ffplay -url:v 239.0.0.5:5678 -f dektec -i 211000054
+@end example
+
+@item
+Receive a video and audio stream with a DTA-2110:
+@example
+ffplay -url:v 239.0.0.5:5678 -url:a 239.0.0.5:5680 -f dektec -i 211000054
+@end example
+
+@item
+Receive an audio stream with specific parameters via DTA-2110:
+@example
+ffplay -url:a 239.0.0.5:5680 -sample_rate 48000 -bps 24 -n_channels 2 -f dektec -i 211000054
+@end example
+
+@item
+Receive and render an SDI stream from a DTA-2178:
+@example
+ffplay -f dektec -i 217800024:1
+@end example
+
+@end itemize
+
 @section dshow
 
 Windows DirectShow input device.

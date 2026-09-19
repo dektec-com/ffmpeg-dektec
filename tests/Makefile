@@ -244,6 +244,7 @@ include $(SRC_PATH)/tests/fate/qtrle.mak
 include $(SRC_PATH)/tests/fate/real.mak
 include $(SRC_PATH)/tests/fate/sbc.mak
 include $(SRC_PATH)/tests/fate/screen.mak
+include $(SRC_PATH)/tests/fate/sdi.mak
 include $(SRC_PATH)/tests/fate/segafilm.mak
 include $(SRC_PATH)/tests/fate/segment.mak
 include $(SRC_PATH)/tests/fate/source.mak
