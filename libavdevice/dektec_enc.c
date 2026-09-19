@@ -659,6 +659,10 @@ static int outpchannel_write_header(AVFormatContext *s)
         context->format_context->streams[i]->time_base = s->streams[i]->time_base;
         context->format_context->streams[i]->avg_frame_rate = s->streams[i]->avg_frame_rate;
         avcodec_parameters_copy(context->format_context->streams[i]->codecpar, s->streams[i]->codecpar);
+        // The device's default audio codec is 2110's big-endian L24; the sdi muxer
+        // takes little-endian samples, which outpchannel_write_packet makes of them.
+        if (s->streams[i]->codecpar->codec_id == AV_CODEC_ID_PCM_S24BE)
+            context->format_context->streams[i]->codecpar->codec_id = AV_CODEC_ID_PCM_S24LE;
     }
 
     av_dict_set(&options, "no_header", "1", 0);
@@ -686,6 +690,14 @@ static int outpchannel_write_packet(AVFormatContext *s, AVPacket *pkt)
         return -1;
     }
     min_fifo_load = (fifo_size * 3) / 4;
+
+    if (s->streams[pkt->stream_index]->codecpar->codec_id == AV_CODEC_ID_PCM_S24BE) {
+        int ret = av_packet_make_writable(pkt);
+        if (ret < 0)
+            return ret;
+        for (int i = 0; i + 2 < pkt->size; i += 3)
+            FFSWAP(uint8_t, pkt->data[i], pkt->data[i + 2]);
+    }
 
     av_write_frame(context->format_context, pkt);
     av_packet_unref(pkt);
