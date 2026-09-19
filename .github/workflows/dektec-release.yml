@@ -1,0 +1,162 @@
+# Builds a release of DekTec's FFmpeg from a tag such as n9.0.2-dektec1: ffmpeg, ffprobe
+# and ffplay for Linux and Windows x64, LGPL, with CDTAPI's newest release linked in,
+# each tested with FATE's sdi and dektec tests first. The release holds both packages,
+# the source at the tag, which the LGPL asks for, and their SHA-256 sums. Run by hand,
+# it makes a draft release of the tag given, to try the workflow.
+
+name: Release
+
+on:
+  push:
+    tags: ["n*-dektec*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The tag to build, as a draft release"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  CONFIGURE: --disable-autodetect --enable-sdl2 --disable-doc
+
+jobs:
+  linux:
+    # The oldest runner, for the oldest glibc the binaries run with.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+
+      - name: Install the build tools
+        run: sudo apt-get update && sudo apt-get install -y nasm pkg-config libsdl2-dev
+
+      - name: Build CDTAPI's newest release
+        run: |
+          tag=$(git ls-remote --tags --refs https://github.com/dektec-com/cdtapi.git 'v*' |
+                sed 's|.*refs/tags/||' | sort -V | tail -n 1)
+          echo "CDTAPI_TAG=$tag" >> "$GITHUB_ENV"
+          git clone -q --depth 1 --branch "$tag" https://github.com/dektec-com/cdtapi.git "$RUNNER_TEMP/cdtapi-src"
+          cmake -S "$RUNNER_TEMP/cdtapi-src" -B "$RUNNER_TEMP/cdtapi-build" -DCMAKE_BUILD_TYPE=Release \
+                -DCDTAPI_BUILD_TESTS=OFF -DCDTAPI_BUILD_EXAMPLES=OFF -DCDTAPI_WARNINGS_AS_ERRORS=OFF \
+                -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/cdtapi"
+          cmake --build "$RUNNER_TEMP/cdtapi-build" -j"$(nproc)"
+          cmake --install "$RUNNER_TEMP/cdtapi-build"
+
+      - name: Build FFmpeg, run FATE's tests and install
+        run: |
+          sh tools/dektec/build.sh --cdtapi "$RUNNER_TEMP/cdtapi" --fate --install \
+             --prefix "$RUNNER_TEMP/stage" -- $CONFIGURE
+
+      - name: Package
+        run: |
+          name=ffmpeg-dektec-$TAG-linux64
+          mkdir -p "$name/bin"
+          cp "$RUNNER_TEMP"/stage/bin/ffmpeg "$RUNNER_TEMP"/stage/bin/ffprobe "$RUNNER_TEMP"/stage/bin/ffplay "$name/bin/"
+          sh tools/dektec/release-readme.sh "$TAG" "$CDTAPI_TAG" "$name/bin/ffmpeg" > "$name/README.txt"
+          cp LICENSE.md COPYING.LGPLv2.1 "$name/"
+          cp "$RUNNER_TEMP/cdtapi-src/LICENSE" "$name/LICENSE.cdtapi"
+          tar -cJf "$name.tar.xz" "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux64
+          path: ffmpeg-dektec-*-linux64.tar.xz
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          install: make diffutils pkgconf nasm
+          path-type: inherit
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build SDL2, static with the static C runtime
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install sdl2:x64-windows-static
+          "SDL2_PC=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\lib\pkgconfig" >> $env:GITHUB_ENV
+
+      - name: Build CDTAPI's newest release, static with the static C runtime
+        shell: pwsh
+        run: |
+          $tag = (git ls-remote --tags --refs https://github.com/dektec-com/cdtapi.git 'v*' |
+                  ForEach-Object { ($_ -split 'refs/tags/')[1] } |
+                  Sort-Object { [version]($_ -replace '^v', '') } | Select-Object -Last 1)
+          "CDTAPI_TAG=$tag" >> $env:GITHUB_ENV
+          git clone -q --depth 1 --branch $tag https://github.com/dektec-com/cdtapi.git "$env:RUNNER_TEMP\cdtapi-src"
+          cmake -S "$env:RUNNER_TEMP\cdtapi-src" -B "$env:RUNNER_TEMP\cdtapi-build" -G Ninja -DCMAKE_BUILD_TYPE=Release `
+                -DCDTAPI_BUILD_TESTS=OFF -DCDTAPI_BUILD_EXAMPLES=OFF -DCDTAPI_WARNINGS_AS_ERRORS=OFF `
+                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_INSTALL_PREFIX="$env:RUNNER_TEMP\cdtapi"
+          cmake --build "$env:RUNNER_TEMP\cdtapi-build"
+          cmake --install "$env:RUNNER_TEMP\cdtapi-build"
+
+      - name: Build FFmpeg, run FATE's tests and install
+        shell: msys2 {0}
+        run: |
+          # MSVC's link.exe before MSYS2's, which is another program.
+          export PATH="$(dirname "$(command -v cl)"):$PATH"
+          export PKG_CONFIG_PATH="$(cygpath -u "$SDL2_PC")"
+          sh tools/dektec/build.sh --cdtapi "$(cygpath -u "$RUNNER_TEMP")/cdtapi" --crt mt --fate --install \
+             --prefix "$(cygpath -u "$RUNNER_TEMP")/stage" -- $CONFIGURE
+
+      - name: Package
+        shell: msys2 {0}
+        run: |
+          stage=$(cygpath -u "$RUNNER_TEMP")/stage
+          name=ffmpeg-dektec-$TAG-win64
+          mkdir -p "$name/bin"
+          cp "$stage/bin/ffmpeg.exe" "$stage/bin/ffprobe.exe" "$stage/bin/ffplay.exe" "$name/bin/"
+          sh tools/dektec/release-readme.sh "$TAG" "$CDTAPI_TAG" "$name/bin/ffmpeg.exe" > "$name/README.txt"
+          cp LICENSE.md COPYING.LGPLv2.1 "$name/"
+          cp "$(cygpath -u "$RUNNER_TEMP")/cdtapi-src/LICENSE" "$name/LICENSE.cdtapi"
+          pwsh -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$name.zip'"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win64
+          path: ffmpeg-dektec-*-win64.zip
+
+  release:
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: The source at the tag
+        run: |
+          git archive --format=tar --prefix="ffmpeg-dektec-$TAG/" "$TAG" | xz -9 > "ffmpeg-dektec-$TAG-source.tar.xz"
+          sha256sum ffmpeg-dektec-$TAG-* > SHA256SUMS
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRAFT: ${{ github.event_name == 'workflow_dispatch' && '--draft' || '' }}
+        run: |
+          base=${TAG%%-dektec*}
+          notes="DekTec's FFmpeg $TAG: FFmpeg $base with the dektec input and output device and the sdi format, on CDTAPI.
+
+          ffmpeg, ffprobe and ffplay for Linux and Windows x64, LGPL. The DekTec driver is installed separately; see https://www.dektec.com/downloads/SDK/. The source these are built from is the -source.tar.xz beside them."
+          gh release create "$TAG" $DRAFT --verify-tag --title "$TAG" --notes "$notes" \
+             ffmpeg-dektec-$TAG-* SHA256SUMS
