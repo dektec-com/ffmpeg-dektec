@@ -479,6 +479,9 @@ static int sdi_read_header(AVFormatContext *s)
 
     uint8_t buffer[1024];
 
+    // The audio stream is added when the first frame with audio arrives
+    s->ctx_flags |= AVFMTCTX_NOHEADER;
+
     if (sdi->option_no_header) {
         StandardOption options = {0};
         int ret;
