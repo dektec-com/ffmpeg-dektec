@@ -116,6 +116,7 @@ typedef struct SDIDemuxContext {
     int active_channels;               ///< Number of active audio channels
 
     AVCRC *audio_crc_ctx; ///< CRC context for validation AES channel status
+    int64_t audio_pts;    ///< pts of the frame the buffered audio came with
 } SDIDemuxContext;
 
 typedef struct AesStatusWord {
@@ -949,7 +950,7 @@ static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
         pkt->pos = avio_tell(s->pb);
         pkt->size = packet_size;
         pkt->stream_index = AUDIO_STREAM_ID;
-        pkt->pts = pkt->dts = sdi->frame_duration * (pkt->pos - sdi->header_size) / s->packet_size;
+        pkt->pts = pkt->dts = sdi->audio_pts;
         pkt->duration = sdi->frame_duration;
 
         ptr = pkt->buf->data;
@@ -1118,6 +1119,8 @@ static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
         pkt->stream_index = VIDEO_STREAM_ID;
         pkt->pts = pkt->dts = sdi->frame_duration * (pkt->pos - sdi->header_size) / s->packet_size;
         pkt->duration = sdi->frame_duration;
+        // The frame's audio goes out with the next call, at the frame's time
+        sdi->audio_pts = pkt->pts;
     }
     return 0;
 }
