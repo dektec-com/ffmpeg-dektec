@@ -123,12 +123,10 @@ mkdir -p "$build"
 build=$(cd "$build" && pwd)
 
 set -- --prefix="$prefix" --enable-libcdtapi "$@"
-if [ $shared = yes ]; then
-    set -- --enable-shared --disable-static "$@"
-else
-    # A static CDTAPI names the system libraries it needs in Libs.private.
-    set -- --pkg-config-flags=--static "$@"
-fi
+# A static CDTAPI names the system libraries it needs in Libs.private, which a shared
+# libavdevice needs as much as a program does.
+set -- --pkg-config-flags=--static "$@"
+[ $shared = no ] || set -- --enable-shared --disable-static "$@"
 if [ $platform = windows ]; then
     command -v cl >/dev/null 2>&1 ||
         die "cl is not on the path; run build.ps1, which sets up MSVC first"
