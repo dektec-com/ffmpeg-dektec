@@ -38,7 +38,7 @@ Builds FFmpeg with the dektec input and output device and the sdi format.
   --build DIR     build directory; build/<platform>[-shared] by default
   --prefix DIR    where 'make install' puts FFmpeg; <build>/install by default
   --shared        build shared libraries instead of static ones
-  --fate          run FATE's sdi tests after the build
+  --fate          run FATE's sdi tests and the device's after the build
   --install       run 'make install' after the build
   -j N            parallel jobs; the number of processors by default
   -h, --help      this text
@@ -153,6 +153,6 @@ if [ $fate = yes ]; then
         export LD_LIBRARY_PATH="$libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         export PATH="$libs:$PATH"
     fi
-    make -k fate-sdi
+    make -k fate-sdi fate-dektec
 fi
 [ $install = no ] || make install
