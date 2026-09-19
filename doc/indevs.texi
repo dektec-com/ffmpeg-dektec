@@ -462,6 +462,11 @@ ffmpeg -channels 16 -format_code Hi50 -f decklink -i 'UltraStudio Mini Recorder'
 
 Input device for DekTec hardware.
 
+To enable this input device, you need CDTAPI, DekTec's open-source C API
+for its cards (@url{https://github.com/dektec-com/cdtapi}), and you need to
+configure with @code{--enable-libcdtapi}; configure finds it through
+@command{pkg-config}.
+
 DekTec devices are identified by their serial number and port number
 (e.g. 2178000409:5). If no port is specified, port 1 is used.
 
