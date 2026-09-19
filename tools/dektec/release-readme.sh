@@ -23,9 +23,10 @@ tag=$1
 cdtapi=$2
 ffmpeg=$3
 
+title="DekTec's FFmpeg $tag"
+echo "$title"
+echo "$title" | sed 's/./=/g'
 cat <<EOF
-DekTec's FFmpeg $tag
-====================
 
 FFmpeg ${tag%%-dektec*} with DekTec's input and output device, dektec, and the sdi
 format, built on CDTAPI $cdtapi, DekTec's open-source C API for its cards.
@@ -46,4 +47,4 @@ ffmpeg-dektec-$tag-source.tar.xz.
 
 Configuration:
 EOF
-"$ffmpeg" -hide_banner -buildconf 2>&1 | sed 's/^/  /'
+"$ffmpeg" -hide_banner -buildconf 2>&1 | grep -e '--' | sed 's/^ */  /'
