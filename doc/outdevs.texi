@@ -279,7 +279,9 @@ Output device for DekTec hardware.
 To enable this output device, you need CDTAPI, DekTec's open-source C API
 for its cards (@url{https://github.com/dektec-com/cdtapi}), and you need to
 configure with @code{--enable-libcdtapi}; configure finds it through
-@command{pkg-config}.
+@command{pkg-config}. It replaces @code{--enable-dektec} and
+@code{--enable-nonfree}, which DekTec's earlier releases needed for the
+closed DTAPI.
 
 DekTec devices are identified by their serial number and port number
 (e.g. 2178000409:5). If no port is specified, port 1 is used.
@@ -348,13 +350,13 @@ Specify the RTP payload type. Default is 96. Allowed range is from 96 to 127.
 @item
 Playout an MPEG transport stream via a DTA-2110 (port 1):
 @example
-ffmpeg -i input.ts -url:v 239.0.0.5:5678  -url:a 239.0.0.6:5680 -f dektec -o 211000054
+ffmpeg -i input.ts -url:v 239.0.0.5:5678 -url:a 239.0.0.6:5680 -f dektec 211000054
 @end example
 
 @item
 Playout an MPEG transport stream via a DTA-2178 port 3:
 @example
-ffmpeg -i input.ts -f dektec -o 217800024:3
+ffmpeg -i input.ts -f dektec 217800024:3
 @end example
 
 @end itemize
