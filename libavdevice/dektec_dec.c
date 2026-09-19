@@ -155,6 +155,14 @@ static AVRational frame_rates[] = {
         av_log(avcl, level, "[%s] " fmt, buf, ## __VA_ARGS__);                 \
     } while (0)
 
+// Whether the application asked to stop a blocking read. libavformat's own check is
+// not exported from its shared library.
+static int interrupted(AVFormatContext *s)
+{
+    const AVIOInterruptCB *cb = &s->interrupt_callback;
+    return cb->callback && cb->callback(cb->opaque);
+}
+
 static int read_packet(void *opaque, uint8_t *frame, int frame_size)
 {
     DekTecDemuxContext *context = (DekTecDemuxContext *)opaque;
@@ -694,7 +702,7 @@ static int avfifo_configure_video(AVFormatContext *s, AvFifo_RxFifo *fifo,
         while (AvFifo_RxFifo_GetFifoLoad(fifo) < 1) {
             av_usleep(10000);
 
-            if (ff_check_interrupt(&s->interrupt_callback))
+            if (interrupted(s))
                 return AVERROR_EXIT;
         }
 
@@ -907,7 +915,7 @@ static int avfifo_autodetect_audio(AVFormatContext *s, AvFifo_RxFifo *fifo,
         while (AvFifo_RxFifo_GetFifoLoad(fifo) <= 0) {
             av_usleep(1000);
             
-            if (ff_check_interrupt(&s->interrupt_callback))
+            if (interrupted(s))
                 return AVERROR_EXIT;
         }
 
@@ -1215,7 +1223,7 @@ static int avfifo_read_audio(AVFormatContext *s, AvFifo_RxFifo *fifo,
         while (AvFifo_RxFifo_GetFifoLoad(fifo) <= 0) {
             av_usleep(1000);
 
-            if (ff_check_interrupt(&s->interrupt_callback))
+            if (interrupted(s))
                 return AVERROR_EXIT;
         }
 
@@ -1297,7 +1305,7 @@ static int avfifo_read_audio(AVFormatContext *s, AvFifo_RxFifo *fifo,
             return -1;
         }
         
-        if (ff_check_interrupt(&s->interrupt_callback))
+        if (interrupted(s))
             return AVERROR_EXIT;
     }
 
@@ -1412,7 +1420,7 @@ static int avfifo_read_packet(AVFormatContext *s, AVPacket *pkt)
             }
         }
 
-        if (ff_check_interrupt(&s->interrupt_callback))
+        if (interrupted(s))
             return AVERROR_EXIT;
         
         if (!fifo || !st || !par)
