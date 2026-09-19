@@ -1,0 +1,118 @@
+# Once a week, rebases DekTec's commits onto FFmpeg's newest release when there is a new
+# one, builds the result with CDTAPI's newest release on Linux and runs FATE's sdi tests,
+# and opens an issue that says what came of it. It does so for the newest release of the
+# major version dektec stands on, and for the newest of all, a new major version, which
+# is a port of its own. The branch dektec is not touched: the rebased commits wait in
+# sync/<tag> until someone adopts them.
+
+name: Follow FFmpeg's releases
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        series: [same, newest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dektec
+          fetch-depth: 0
+
+      - name: Rebase onto FFmpeg's newest release
+        id: sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          result=$(sh tools/dektec/sync-upstream.sh --series ${{ matrix.series }} dektec | tail -n 1)
+          echo "$result"
+          set -- $result
+          # A newest release of the same major version is the other job's.
+          if [ "${{ matrix.series }}" = newest ] && [ "${3%%.*}" = "${2%%.*}" ]; then
+              set -- up-to-date "$2"
+          fi
+          echo "outcome=$1" >> "$GITHUB_OUTPUT"
+          echo "base=$2" >> "$GITHUB_OUTPUT"
+          echo "tag=${3:-}" >> "$GITHUB_OUTPUT"
+          echo "detail=${4:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Install the build tools
+        if: steps.sync.outputs.outcome == 'rebased'
+        run: sudo apt-get update && sudo apt-get install -y nasm pkg-config
+
+      - name: Build CDTAPI's newest release
+        if: steps.sync.outputs.outcome == 'rebased'
+        run: |
+          tag=$(git ls-remote --tags --refs https://github.com/dektec-com/cdtapi.git 'v*' |
+                sed 's|.*refs/tags/||' | sort -V | tail -n 1)
+          git clone -q --depth 1 --branch "$tag" https://github.com/dektec-com/cdtapi.git "$RUNNER_TEMP/cdtapi-src"
+          cmake -S "$RUNNER_TEMP/cdtapi-src" -B "$RUNNER_TEMP/cdtapi-build" -DCMAKE_BUILD_TYPE=Release \
+                -DCDTAPI_BUILD_TESTS=OFF -DCDTAPI_BUILD_EXAMPLES=OFF -DCDTAPI_WARNINGS_AS_ERRORS=OFF \
+                -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/cdtapi"
+          cmake --build "$RUNNER_TEMP/cdtapi-build" -j"$(nproc)"
+          cmake --install "$RUNNER_TEMP/cdtapi-build"
+
+      - name: Build FFmpeg and run FATE's sdi tests
+        id: build
+        if: steps.sync.outputs.outcome == 'rebased'
+        continue-on-error: true
+        run: |
+          git checkout -q "sync/${{ steps.sync.outputs.tag }}"
+          sh tools/dektec/build.sh --cdtapi "$RUNNER_TEMP/cdtapi" --fate -- --disable-doc > build.log 2>&1 ||
+              { tail -n 60 build.log; exit 1; }
+
+      - name: Push the rebased branch
+        if: steps.sync.outputs.outcome == 'rebased'
+        run: git push -f origin "sync/${{ steps.sync.outputs.tag }}"
+
+      - name: Open an issue
+        if: steps.sync.outputs.outcome != 'up-to-date'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.sync.outputs.outcome }}
+          BASE: ${{ steps.sync.outputs.base }}
+          TAG: ${{ steps.sync.outputs.tag }}
+          DETAIL: ${{ steps.sync.outputs.detail }}
+          BUILD: ${{ steps.build.outcome }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="FFmpeg $TAG: follow it from $BASE"
+          if [ "${TAG%%.*}" != "${BASE%%.*}" ]; then
+              major="
+
+          $TAG is a new major version: expect FFmpeg's API changes to need more than a rebase."
+          else
+              major=
+          fi
+          if gh issue list --state open --search "\"$title\" in:title" --json title -q '.[].title' | grep -qxF "$title"; then
+              echo "An issue is open already: $title"
+              exit 0
+          fi
+          if [ "$OUTCOME" = conflict ]; then
+              body="FFmpeg released $TAG. DekTec's commits on $BASE do not rebase onto it without help: commit $DETAIL did not apply.
+
+          Rebase by hand: \`git rebase --onto $TAG $BASE dektec\`, resolve, build with \`tools/dektec/build.sh --fate\`, and force-push dektec.
+
+          Run: $RUN"
+          elif [ "$BUILD" = success ]; then
+              body="FFmpeg released $TAG. DekTec's commits rebase onto it cleanly, and the result builds on Linux and passes FATE's sdi tests: branch \`$DETAIL\`.
+
+          To adopt it, check it on Windows too, re-sign the commits (\`git rebase --exec 'git commit --amend --no-edit -S' $TAG\`), force-push it as dektec, and tag the release.
+
+          Run: $RUN"
+          else
+              body="FFmpeg released $TAG. DekTec's commits rebase onto it cleanly, in branch \`$DETAIL\`, but the build or FATE's sdi tests fail there; the run's log says what.
+
+          Run: $RUN"
+          fi
+          gh issue create --title "$title" --body "$body$major"
