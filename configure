@@ -223,6 +223,7 @@ External library support:
   --enable-libbluray       enable BluRay reading using libbluray [no]
   --enable-libbs2b         enable bs2b DSP library [no]
   --enable-libcaca         enable textual display using libcaca [no]
+  --enable-libcdtapi       enable DekTec SDI and SMPTE 2110 I/O via libcdtapi [no]
   --enable-libcdio         enable audio CD grabbing with libcdio [no]
   --enable-libcodec2       enable codec2 en/decoding using libcodec2 [no]
   --enable-libdav1d        enable AV1 decoding via libdav1d [no]
@@ -322,7 +323,6 @@ External library support:
   --enable-lv2             enable LV2 audio filtering [no]
   --disable-lzma           disable lzma [autodetect]
   --enable-decklink        enable Blackmagic DeckLink I/O support [no]
-  --enable-dektec          enable DekTec I/O support [no]
   --enable-mbedtls         enable mbedTLS, needed for https support
                            if openssl, gnutls or libtls is not used [no]
   --enable-mediacodec      enable Android MediaCodec support [no]
@@ -2045,7 +2045,6 @@ EXTERNAL_LIBRARY_GPL_LIST="
 
 EXTERNAL_LIBRARY_NONFREE_LIST="
     decklink
-    dektec
     libfdk_aac
     libmpeghdec
 "
@@ -2083,6 +2082,7 @@ EXTERNAL_LIBRARY_LIST="
     libbluray
     libbs2b
     libcaca
+    libcdtapi
     libcodec2
     libdav1d
     libdc1394
@@ -4038,9 +4038,9 @@ decklink_indev_suggest="libzvbi"
 decklink_outdev_deps="decklink threads"
 decklink_outdev_suggest="libklvanc"
 decklink_outdev_extralibs="-lstdc++"
-dektec_indev_deps="dektec"
+dektec_indev_deps="libcdtapi"
 dektec_indev_select="sdi_demuxer udp_protocol"
-dektec_outdev_deps="dektec"
+dektec_outdev_deps="libcdtapi"
 dektec_outdev_select="sdi_muxer udp_protocol"
 dshow_indev_deps="IBaseFilter"
 dshow_indev_extralibs="-lpsapi -lole32 -lstrmiids -luuid -loleaut32 -lshlwapi"
@@ -7338,6 +7338,7 @@ enabled libass            && require_pkg_config libass "libass >= 0.11.0" ass/as
 enabled libbluray         && require_pkg_config libbluray libbluray libbluray/bluray.h bd_open
 enabled libbs2b           && require_pkg_config libbs2b libbs2b bs2b.h bs2b_open
 enabled libcaca           && require_pkg_config libcaca caca caca.h caca_create_canvas
+enabled libcdtapi         && require_pkg_config libcdtapi cdtapi cdtapi.h DtapiGetVersion
 enabled libcodec2         && require libcodec2 codec2/codec2.h codec2_create -lcodec2
 enabled libdav1d          && require_pkg_config libdav1d "dav1d >= 1.0.0" "dav1d/dav1d.h" dav1d_version
 enabled libdavs2          && require_pkg_config libdavs2 "davs2 >= 1.6.0" davs2.h davs2_decoder_open
@@ -7606,22 +7607,6 @@ if enabled decklink; then
             decklink_indev_extralibs="$decklink_indev_extralibs -lole32 -luuid -loleaut32"
             ;;
     esac
-fi
-
-if enabled dektec; then
-    if ! enabled nonfree; then
-        die "ERROR: DekTec is incompatible with (l)gpl"
-    fi
-
-    require_pkg_config CDTAPI CDTAPI "CDTAPI.h" CDTAPI_VERSION
-    if test $target_os = "win64"; then
-        check_lib CDTAPI "CDTAPI.h" CDTAPI_VERSION -lCDTAPI64MT
-    else
-        check_lib CDTAPI "CDTAPI.h" CDTAPI_VERSION -lCDTAPI64
-    fi
-
-    dektec_indev_extralibs="$dektec_indev_extralibs ${CDTAPI_extralibs}"
-    dektec_outdev_extralibs="$dektec_outdev_extralibs ${CDTAPI_extralibs}"
 fi
 
 enabled securetransport &&

@@ -276,6 +276,11 @@ ffmpeg -i test.avi -f decklink -pix_fmt uyvy422 -s 720x486 -r 24000/1001 'DeckLi
 
 Output device for DekTec hardware.
 
+To enable this output device, you need CDTAPI, DekTec's open-source C API
+for its cards (@url{https://github.com/dektec-com/cdtapi}), and you need to
+configure with @code{--enable-libcdtapi}; configure finds it through
+@command{pkg-config}.
+
 DekTec devices are identified by their serial number and port number
 (e.g. 2178000409:5). If no port is specified, port 1 is used.
 
