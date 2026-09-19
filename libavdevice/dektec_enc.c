@@ -43,14 +43,18 @@
 #include "cdtapi.h"
 #include "cdtapi_avfifo.h"
 
+#include "config.h"
+#if HAVE_INTRINSICS_SSE2
 #include <emmintrin.h> // SSE2 intrinsics
 #include <immintrin.h> // Other intrinsics
+#if defined(__GNUC__)
+#pragma GCC target("ssse3")
+#endif
+#endif
 
 #define MAX_AUDIO_STREAMS 8
 #define MAX_VIDEO_STREAMS 1
 #define MAX_STREAMS MAX_AUDIO_STREAMS + MAX_VIDEO_STREAMS
-
-#pragma GCC target("ssse3")
 
 typedef struct DekTecMuxContext {
     const AVClass *av_class;
@@ -167,6 +171,7 @@ static int write_packet(void *opaque, const uint8_t *buf, int buf_size)
     return 0;
 }
 
+#if HAVE_INTRINSICS_SSE2
 static void pack_and_store(__m128i symbols, uint8_t* dst)
 {
     #define Z (uint8_t)0x80
@@ -181,11 +186,16 @@ static void pack_and_store(__m128i symbols, uint8_t* dst)
     _mm_storeu_si128((__m128i*)dst, _mm_or_si128(symbols_even, symbols_odd));
     #undef Z
 }
+#endif
 
+// Packs planes into a line of 10-bit symbols, least significant bit first in the order
+// U Y V Y: with SSSE3 eight pixels at a time, and the rest, or all without SSSE3, two
+// pixels, four symbols in five bytes, at a time.
 static void write_10b_packed_line(const uint16_t *src_y, const uint16_t *src_u,
                                   const uint16_t *src_v, uint8_t *dst,
                                   int dst_size, int width)
 {
+#if HAVE_INTRINSICS_SSE2
     int cpu_flags = av_get_cpu_flags();
     if (X86_SSSE3(cpu_flags)) {
         while (width >= 8 && dst_size >= 26) {
@@ -234,6 +244,17 @@ static void write_10b_packed_line(const uint16_t *src_y, const uint16_t *src_u,
             src_v += 4;
             width -= 8;
         }
+    }
+#endif
+    while (width >= 2 && dst_size >= 5) {
+        uint64_t bits = (uint64_t)(*src_u++ & 0x3FF) | (uint64_t)(src_y[0] & 0x3FF) << 10 |
+                        (uint64_t)(*src_v++ & 0x3FF) << 20 | (uint64_t)(src_y[1] & 0x3FF) << 30;
+        for (int i = 0; i < 5; i++)
+            dst[i] = (uint8_t)(bits >> 8 * i);
+        src_y += 2;
+        dst += 5;
+        dst_size -= 5;
+        width -= 2;
     }
 }
 

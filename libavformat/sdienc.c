@@ -48,11 +48,16 @@
 
 #include <inttypes.h>
 
+#include "config.h"
+#if HAVE_INTRINSICS_SSE2
 #include <emmintrin.h> // SSE2 intrinsics
 #include <immintrin.h> // Other intrinsics
+#if defined(__GNUC__)
+#pragma GCC target("ssse3")
+#endif
+#endif
 
 #define MAX_STREAMS 8
-#pragma GCC target("ssse3")
 
 typedef struct SdiMuxContext {
     const AVClass *av_class;
@@ -92,14 +97,17 @@ typedef struct SdiMuxContext {
                         const uint16_t *pv, uint16_t *sdi, int width);
 } SdiMuxContext;
 
+#if HAVE_INTRINSICS_SSE2
 static int is_sse_aligned(const uint16_t *ptr)
 {
     return (((intptr_t)ptr) % 16) == 0;
 }
+#endif
 
 static void write_blanking(uint16_t* ptr, int length, uint16_t blanking_symbol)
 {
     uint16_t *ptr_end = ptr + length;
+#if HAVE_INTRINSICS_SSE2
     __m128i blanking;
     while (!is_sse_aligned(ptr) && ptr < ptr_end)
         *ptr++ = blanking_symbol;
@@ -108,6 +116,7 @@ static void write_blanking(uint16_t* ptr, int length, uint16_t blanking_symbol)
         _mm_stream_si128((__m128i*)ptr, blanking);
         ptr += 8;
     }
+#endif
     while (ptr < ptr_end)
         *ptr++ = blanking_symbol;
 }
@@ -155,6 +164,7 @@ static void from_planar_2si(const uint16_t *py, const uint16_t *pu,
     }
 }
 
+#if HAVE_INTRINSICS_SSE2
 static void from_planar_sse(const uint16_t *py, const uint16_t *pu,
                             const uint16_t *pv, uint16_t *sdi, int width)
 {
@@ -176,6 +186,7 @@ static void from_planar_sse(const uint16_t *py, const uint16_t *pu,
         width -= 8;
     }
 }
+#endif
 
 /*
  * Copy planar pixels to SDI line. Width is the picture width in pixels.
@@ -461,7 +472,6 @@ static int sdi_init(AVFormatContext *s)
     AVStream *video_stream = NULL;
     int sdi_frame_size;
     int aligned_frame_size;
-    int cpu_flags;
 
     for (int i = 0; i < s->nb_streams; i++) {
         if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -562,13 +572,14 @@ static int sdi_init(AVFormatContext *s)
             return ret;
     }
 
-    cpu_flags = av_get_cpu_flags();
     if (sdi->has_sub_images) {
         sdi->from_planar = from_planar_2si;
     }
-    else if (X86_SSSE3(cpu_flags)) {
+#if HAVE_INTRINSICS_SSE2
+    else if (X86_SSSE3(av_get_cpu_flags())) {
         sdi->from_planar = from_planar_sse;
     }
+#endif
     else {
         sdi->from_planar = from_planar;
     }
@@ -681,7 +692,6 @@ static void write_10b_packed(AVIOContext *pb, SdiMuxContext *sdi,
     #define shuffle_odd (_mm_set_epi8(Z, Z, Z, Z, Z, Z, 15, 14, 11, 10, Z, 7, 6, 3, 2, Z))
 
     int symlen = 10;
-    int cpu_flags = av_get_cpu_flags();
     while (sdi->bitpos != 0 && len--) {
         // Store word
         sdi->out_word[0] |= *pin << sdi->bitpos;
@@ -696,7 +706,8 @@ static void write_10b_packed(AVIOContext *pb, SdiMuxContext *sdi,
         sdi->bitpos &= 0x1F;
         pin++;
     }
-    if (X86_SSSE3(cpu_flags)) {
+#if HAVE_INTRINSICS_SSE2
+    if (X86_SSSE3(av_get_cpu_flags())) {
         uint8_t buffer[16];
         while (len >= 8) {
             __m128i symbols, symbols_even, symbols_odd;
@@ -712,6 +723,7 @@ static void write_10b_packed(AVIOContext *pb, SdiMuxContext *sdi,
             len -= 8;
         }
     }
+#endif
     while (len--) {
         // Store word
         sdi->out_word[0] |= *pin << sdi->bitpos;
