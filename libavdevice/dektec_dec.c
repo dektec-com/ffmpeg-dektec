@@ -531,6 +531,10 @@ static int inpchannel_read_header(AVFormatContext *s)
         return -1;
     }
 
+    // The frames carry the video and any audio from the first on: a few are enough to
+    // find the streams, where FFmpeg's default of 5 seconds would keep that much in the
+    // FIFO as latency.
+    context->format_context->max_analyze_duration = 200000;
     result = avformat_find_stream_info(context->format_context, NULL);
     if (result != 0) {
         av_log(s, AV_LOG_ERROR, "Could not find stream info: %s\n", av_err2str(result));
