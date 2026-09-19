@@ -528,6 +528,9 @@ int av_parse_standard_option(AVFormatContext *s, const char *arg, StandardOption
     }
 
     option->lines = parse_lines(&arg);
+    // 525-line video is 480i by its usual name and 487 lines here
+    if (option->lines == 480)
+        option->lines = 487;
     if (option->lines < 487 || option->lines > 2160) {
         av_log(s, AV_LOG_ERROR, "Invalid number of lines: %d\n", option->lines);
         return -1;
