@@ -106,42 +106,42 @@ fate-sdi-mux-1080p60: REF = 3881241969cd42a96e634b853bd3c767
 FATE_SDI-yes += fate-sdi-mux-2160p23_98
 fate-sdi-mux-2160p23_98: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "24000/1001" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 6G2160p md5:
 fate-sdi-mux-2160p23_98: CMP = oneline
-fate-sdi-mux-2160p23_98: REF = 647d0e3951e5a3dfdeafc91e24858f1b
+fate-sdi-mux-2160p23_98: REF = 2c79c398762b8544d9736df60497ff4f
 
 FATE_SDI-yes += fate-sdi-mux-2160p24
 fate-sdi-mux-2160p24: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "24" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 6G2160p md5:
 fate-sdi-mux-2160p24: CMP = oneline
-fate-sdi-mux-2160p24: REF = 6bacda2b665c8974d4e19d70f444d992
+fate-sdi-mux-2160p24: REF = db6f395d5ebcd3c3c2f45b03033f105b
 
 FATE_SDI-yes += fate-sdi-mux-2160p25
 fate-sdi-mux-2160p25: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "25" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 6G2160p md5:
 fate-sdi-mux-2160p25: CMP = oneline
-fate-sdi-mux-2160p25: REF = 3eb970343d75f5b680588808e179af7b
+fate-sdi-mux-2160p25: REF = d3ea1f4ce1ed4686afc69274495c36df
 
 FATE_SDI-yes += fate-sdi-mux-2160p29_97
 fate-sdi-mux-2160p29_97: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "30000/1001" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 6G2160p md5:
 fate-sdi-mux-2160p29_97: CMP = oneline
-fate-sdi-mux-2160p29_97: REF = c0e1bd3b3a88ddda24734d1398239574
+fate-sdi-mux-2160p29_97: REF = 031c9bd632b46fa0668f94903a14105b
 
 FATE_SDI-yes += fate-sdi-mux-2160p30
 fate-sdi-mux-2160p30: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "30" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 6G2160p md5:
 fate-sdi-mux-2160p30: CMP = oneline
-fate-sdi-mux-2160p30: REF = 8543ff2ed4437c2c803a4f7bf4af91ec
+fate-sdi-mux-2160p30: REF = 293ae483b132575c5f2ca2e07bb2ac7b
 
 FATE_SDI-yes += fate-sdi-mux-2160p50
 fate-sdi-mux-2160p50: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "50" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 12G2160p md5:
 fate-sdi-mux-2160p50: CMP = oneline
-fate-sdi-mux-2160p50: REF = d7dc1cf1c0ab9cae2af541b6404dbeb4
+fate-sdi-mux-2160p50: REF = 951d98f22e392f82b5b88d4f3acb1879
 
 FATE_SDI-yes += fate-sdi-mux-2160p59_94
 fate-sdi-mux-2160p59_94: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "60000/1001" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 12G2160p md5:
 fate-sdi-mux-2160p59_94: CMP = oneline
-fate-sdi-mux-2160p59_94: REF = 8f0c9ea736ca69db77c7ec0c9b3762b7
+fate-sdi-mux-2160p59_94: REF = fc27574758abb4814f663269e6760615
 
 FATE_SDI-yes += fate-sdi-mux-2160p60
 fate-sdi-mux-2160p60: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "60" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 12G2160p md5:
 fate-sdi-mux-2160p60: CMP = oneline
-fate-sdi-mux-2160p60: REF = a6b23e235e2b9114c775a3e3c6f017e7
+fate-sdi-mux-2160p60: REF = 9306fb8debf15d00613f9b3b91841e64
 
 
 FATE_SDI += $(FATE_SDI-yes)

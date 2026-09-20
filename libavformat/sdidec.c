@@ -537,7 +537,9 @@ static void to_planar(const uint16_t *in, uint16_t *py, uint16_t *pu,
         uint16_t *pv, int width, int has_sub_images)
 {
     if (has_sub_images) {
-        // 4k SDI lines contain samples for 2 picture lines.
+        // 4k SDI lines contain samples for 2 picture lines, two sample interleaved: a
+        // sub-image holds two adjacent pixels and the next two are the other sub-image's,
+        // as from_planar_2si in sdienc.c lays them out.
         uint16_t *py2 = py + width;
         uint16_t *pu2 = pu + (width >> 1);
         uint16_t *pv2 = pv + (width >> 1);
@@ -548,8 +550,8 @@ static void to_planar(const uint16_t *in, uint16_t *py, uint16_t *pu,
             pu[1] = *in++;
             pu2[0] = *in++;
             pu[0] = *in++;
-            py2[1] = *in++;
-            py[1] = *in++;
+            py2[2] = *in++;
+            py[2] = *in++;
             py2[0] = *in++;
             py[0] = *in++;
             pv2[1] = *in++;
@@ -558,8 +560,8 @@ static void to_planar(const uint16_t *in, uint16_t *py, uint16_t *pu,
             pv[0] = *in++;
             py2[3] = *in++;
             py[3] = *in++;
-            py2[2] = *in++;
-            py[2] = *in++;
+            py2[1] = *in++;
+            py[1] = *in++;
             pu += 2; pu2 += 2;
             pv += 2; pv2 += 2;
             py += 4; py2 += 4;

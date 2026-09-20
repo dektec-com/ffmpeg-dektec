@@ -131,6 +131,13 @@ static uint16_t get_sav_eav_word(int IsVanc, int IsField2, int IsEav)
     return Pattern;
 }
 
+/*
+ * Two sample interleave: a sub-image takes two adjacent pixels and the next two go to the
+ * other sub-image of the row, so of four picture columns sub-image 1 takes columns 0 and
+ * 1 of the even row and sub-image 2 columns 2 and 3, while the odd row goes to sub-images
+ * 3 and 4 the same way. Each sub-image then keeps the 4:2:2 chroma pair of the two luma
+ * samples it belongs to, which is what makes the split possible without resampling.
+ */
 static void from_planar_2si(const uint16_t *py, const uint16_t *pu,
                             const uint16_t *pv, uint16_t *sdi, int width)
 {
@@ -143,8 +150,8 @@ static void from_planar_2si(const uint16_t *py, const uint16_t *pu,
         *sdi++ = pu[1];
         *sdi++ = pu2[0];
         *sdi++ = pu[0];
-        *sdi++ = py2[1];
-        *sdi++ = py[1];
+        *sdi++ = py2[2];
+        *sdi++ = py[2];
         *sdi++ = py2[0];
         *sdi++ = py[0];
         *sdi++ = pv2[1];
@@ -153,8 +160,8 @@ static void from_planar_2si(const uint16_t *py, const uint16_t *pu,
         *sdi++ = pv[0];
         *sdi++ = py2[3];
         *sdi++ = py[3];
-        *sdi++ = py2[2];
-        *sdi++ = py[2];
+        *sdi++ = py2[1];
+        *sdi++ = py[1];
         pu += 2;
         pu2 += 2;
         pv += 2;
