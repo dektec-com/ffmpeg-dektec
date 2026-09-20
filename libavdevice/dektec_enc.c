@@ -596,7 +596,8 @@ static int outpchannel_write_header(AVFormatContext *s)
     vid_std = ff_dektec_get_vidstd(standard);
     av_log(s, AV_LOG_DEBUG, "vid_std=%d\n", vid_std);
 
-    result = DtapiVidStd2IoStd(vid_std, -1, &io_standard, &sub_value);
+    result = DtapiVidStd2IoStd(vid_std, ff_dektec_get_linkstd(standard), &io_standard,
+                               &sub_value);
     if (result != DTAPI_OK) {
         av_log(s, AV_LOG_ERROR, "Could not get IO standard\n");
         return -1;

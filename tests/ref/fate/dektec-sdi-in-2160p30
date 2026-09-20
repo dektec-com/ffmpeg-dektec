@@ -1,0 +1,20 @@
+#format: frame checksums
+#version: 2
+#hash: MD5
+#tb 0: 1/30
+#media_type 0: video
+#codec_id 0: rawvideo
+#dimensions 0: 3840x2160
+#sar 0: 0/1
+#tb 1: 1/48000
+#media_type 1: audio
+#codec_id 1: pcm_s24le
+#sample_rate 1: 48000
+#channel_layout_name 1: mono
+#stream#, dts,        pts, duration,     size, hash
+0,          0,          0,        1, 33177600, ac4a020cb8adaa0575c3edb0f102fcc8
+1,          0,          0,     1600,     4800, 4e9083ab1f11f4d9f713873fbcffeb90
+0,          1,          1,        1, 33177600, 709ea901131935283ee9fc1cd81655b2
+1,       1600,       1600,     1600,     4800, 92b1effec34fc766de9acb8de578cbbe
+0,          2,          2,        1, 33177600, 0bff93fa433c4948ef6fa53a0a805a73
+1,       3200,       3200,     1600,     4800, 28deb0760f18299138793a2a985fd363

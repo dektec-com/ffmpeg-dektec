@@ -127,6 +127,23 @@ int ff_dektec_get_vidstd(SdiFormat sdi_fmt)
     return sdi_fmt_to_vidstd[sdi_fmt];
 }
 
+/*
+ * How 4K is carried, as DtapiVidStd2IoStd takes it: 2 is one 6G link and 3 is one 12G
+ * link, which the payload format tells apart, 0xc0 being 6G and 0xce 12G. A standard
+ * that is not 4K has no link standard and gives -1.
+ */
+int ff_dektec_get_linkstd(SdiFormat sdi_fmt)
+{
+    const struct SdiInfo *info;
+
+    if (sdi_fmt < 0 || sdi_fmt >= SDI_FMT_NB)
+        return -1;
+    info = av_sdi_info(sdi_fmt);
+    if (!ff_has_sub_images(info->payload_format))
+        return -1;
+    return info->payload_format == 0xce ? 3 : 2;
+}
+
 const struct SdiInfo *ff_dektec_get_sdi_info(int vid_std)
 {
     for (SdiFormat sdi_fmt = 0; sdi_fmt < SDI_FMT_NB; sdi_fmt++) {
