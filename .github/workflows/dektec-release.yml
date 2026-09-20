@@ -27,7 +27,7 @@ jobs:
     # The oldest runner, for the oldest glibc the binaries run with.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
           fetch-depth: 0
@@ -62,7 +62,7 @@ jobs:
           cp "$RUNNER_TEMP/cdtapi-src/LICENSE" "$name/LICENSE.cdtapi"
           tar -cJf "$name.tar.xz" "$name"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux64
           path: ffmpeg-dektec-*-linux64.tar.xz
@@ -70,7 +70,7 @@ jobs:
   windows:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
           fetch-depth: 0
@@ -126,7 +126,7 @@ jobs:
           cp "$(cygpath -u "$RUNNER_TEMP")/cdtapi-src/LICENSE" "$name/LICENSE.cdtapi"
           pwsh -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$name.zip'"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: win64
           path: ffmpeg-dektec-*-win64.zip
@@ -135,12 +135,12 @@ jobs:
     needs: [linux, windows]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
 
