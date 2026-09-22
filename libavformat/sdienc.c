@@ -172,6 +172,78 @@ static void from_planar_2si(const uint16_t *py, const uint16_t *pu,
 }
 
 #if HAVE_INTRINSICS_SSE2
+/*
+ * Two sample interleave, eight pixels of the two picture lines per step, which is the
+ * thirty-two symbols of two groups of the layout from_planar_2si writes. A pair of
+ * lines gives each chrominance vector the two lines' samples word by word and each
+ * luminance vector four of their pixels, and a shuffle of the dwords puts the pairs in
+ * the order the groups take them: chrominance the later pair first, luminance the even
+ * pixels and then the odd ones.
+ */
+static void from_planar_2si_sse(const uint16_t *py, const uint16_t *pu,
+                                const uint16_t *pv, uint16_t *sdi, int width)
+{
+    const uint16_t *py2 = py + width;
+    const uint16_t *pu2 = pu + (width >> 1);
+    const uint16_t *pv2 = pv + (width >> 1);
+
+    while (width >= 8) {
+        __m128i y2_symbols = _mm_loadu_si128((const __m128i*)py2); // 8 symbols
+        __m128i y_symbols = _mm_loadu_si128((const __m128i*)py);   // 8 symbols
+        __m128i u_pairs = _mm_unpacklo_epi16(_mm_loadl_epi64((const __m128i*)pu2),
+                                             _mm_loadl_epi64((const __m128i*)pu));
+        __m128i v_pairs = _mm_unpacklo_epi16(_mm_loadl_epi64((const __m128i*)pv2),
+                                             _mm_loadl_epi64((const __m128i*)pv));
+        __m128i u = _mm_shuffle_epi32(u_pairs, _MM_SHUFFLE(2, 3, 0, 1));
+        __m128i v = _mm_shuffle_epi32(v_pairs, _MM_SHUFFLE(2, 3, 0, 1));
+        __m128i y_lo = _mm_shuffle_epi32(_mm_unpacklo_epi16(y2_symbols, y_symbols),
+                                         _MM_SHUFFLE(1, 3, 0, 2));
+        __m128i y_hi = _mm_shuffle_epi32(_mm_unpackhi_epi16(y2_symbols, y_symbols),
+                                         _MM_SHUFFLE(1, 3, 0, 2));
+
+        _mm_storeu_si128((__m128i*)(sdi + 0), _mm_unpacklo_epi64(u, y_lo));
+        _mm_storeu_si128((__m128i*)(sdi + 8),
+                         _mm_unpacklo_epi64(v, _mm_srli_si128(y_lo, 8)));
+        _mm_storeu_si128((__m128i*)(sdi + 16),
+                         _mm_unpacklo_epi64(_mm_srli_si128(u, 8), y_hi));
+        _mm_storeu_si128((__m128i*)(sdi + 24), _mm_unpackhi_epi64(v, y_hi));
+
+        sdi += 32;
+        pu += 4;
+        pu2 += 4;
+        pv += 4;
+        pv2 += 4;
+        py += 8;
+        py2 += 8;
+        width -= 8;
+    }
+    while (width > 0) {
+        width -= 4;
+        *sdi++ = pu2[1];
+        *sdi++ = pu[1];
+        *sdi++ = pu2[0];
+        *sdi++ = pu[0];
+        *sdi++ = py2[2];
+        *sdi++ = py[2];
+        *sdi++ = py2[0];
+        *sdi++ = py[0];
+        *sdi++ = pv2[1];
+        *sdi++ = pv[1];
+        *sdi++ = pv2[0];
+        *sdi++ = pv[0];
+        *sdi++ = py2[3];
+        *sdi++ = py[3];
+        *sdi++ = py2[1];
+        *sdi++ = py[1];
+        pu += 2;
+        pu2 += 2;
+        pv += 2;
+        pv2 += 2;
+        py += 4;
+        py2 += 4;
+    }
+}
+
 static void from_planar_sse(const uint16_t *py, const uint16_t *pu,
                             const uint16_t *pv, uint16_t *sdi, int width)
 {
@@ -580,7 +652,12 @@ static int sdi_init(AVFormatContext *s)
     }
 
     if (sdi->has_sub_images) {
-        sdi->from_planar = from_planar_2si;
+#if HAVE_INTRINSICS_SSE2
+        if (X86_SSE2(av_get_cpu_flags()))
+            sdi->from_planar = from_planar_2si_sse;
+        else
+#endif
+            sdi->from_planar = from_planar_2si;
     }
 #if HAVE_INTRINSICS_SSE2
     else if (X86_SSSE3(av_get_cpu_flags())) {

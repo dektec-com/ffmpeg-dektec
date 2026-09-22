@@ -543,6 +543,50 @@ static void to_planar(const uint16_t *in, uint16_t *py, uint16_t *pu,
         uint16_t *py2 = py + width;
         uint16_t *pu2 = pu + (width >> 1);
         uint16_t *pv2 = pv + (width >> 1);
+#if HAVE_INTRINSICS_SSE2
+        if (X86_SSSE3(av_get_cpu_flags())) {
+            // The other way round from from_planar_2si_sse in sdienc.c: two groups hold
+            // the eight pixels of both picture lines, and after the dwords go back to
+            // their pixel order a shuffle takes the two lines' samples apart again.
+            const __m128i split = _mm_set_epi8(15, 14, 11, 10, 7, 6, 3, 2,
+                                               13, 12, 9, 8, 5, 4, 1, 0);
+            while (width >= 8) {
+                __m128i g0 = _mm_loadu_si128((const __m128i*)(in + 0));
+                __m128i g1 = _mm_loadu_si128((const __m128i*)(in + 8));
+                __m128i g2 = _mm_loadu_si128((const __m128i*)(in + 16));
+                __m128i g3 = _mm_loadu_si128((const __m128i*)(in + 24));
+                __m128i u = _mm_unpacklo_epi64(g0, g2);
+                __m128i v = _mm_unpacklo_epi64(g1, g3);
+                __m128i y_lo = _mm_unpackhi_epi64(g0, g1);
+                __m128i y_hi = _mm_unpackhi_epi64(g2, g3);
+                __m128i u_pairs, v_pairs, y_pairs_lo, y_pairs_hi;
+
+                u_pairs = _mm_shuffle_epi8(
+                        _mm_shuffle_epi32(u, _MM_SHUFFLE(2, 3, 0, 1)), split);
+                v_pairs = _mm_shuffle_epi8(
+                        _mm_shuffle_epi32(v, _MM_SHUFFLE(2, 3, 0, 1)), split);
+                y_pairs_lo = _mm_shuffle_epi8(
+                        _mm_shuffle_epi32(y_lo, _MM_SHUFFLE(2, 0, 3, 1)), split);
+                y_pairs_hi = _mm_shuffle_epi8(
+                        _mm_shuffle_epi32(y_hi, _MM_SHUFFLE(2, 0, 3, 1)), split);
+
+                _mm_storel_epi64((__m128i*)pu2, u_pairs);
+                _mm_storel_epi64((__m128i*)pu, _mm_srli_si128(u_pairs, 8));
+                _mm_storel_epi64((__m128i*)pv2, v_pairs);
+                _mm_storel_epi64((__m128i*)pv, _mm_srli_si128(v_pairs, 8));
+                _mm_storeu_si128((__m128i*)py2,
+                                 _mm_unpacklo_epi64(y_pairs_lo, y_pairs_hi));
+                _mm_storeu_si128((__m128i*)py,
+                                 _mm_unpackhi_epi64(y_pairs_lo, y_pairs_hi));
+
+                in += 32;
+                pu += 4; pu2 += 4;
+                pv += 4; pv2 += 4;
+                py += 8; py2 += 8;
+                width -= 8;
+            }
+        }
+#endif
         while (width > 0)
         {
             width -= 4; // we do 4 pixels on 2 lines in each iteration
