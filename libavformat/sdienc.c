@@ -81,6 +81,9 @@ typedef struct SdiMuxContext {
     uint32_t out_word[2];           ///< running output word
     int bitpos;
     uint16_t *line_buf;
+    uint8_t *frame_buf;             ///< a whole frame, packed to 10-bit symbols
+    uint8_t *frame_ptr;             ///< where the next line goes in frame_buf
+    int frame_size;                 ///< size of a frame, padding included
     uint16_t *blank;
     int num_frames;
     int64_t next_pts;
@@ -113,7 +116,7 @@ static void write_blanking(uint16_t* ptr, int length, uint16_t blanking_symbol)
         *ptr++ = blanking_symbol;
     blanking = _mm_set1_epi16(blanking_symbol);
     while (ptr+7 < ptr_end) {
-        _mm_stream_si128((__m128i*)ptr, blanking);
+        _mm_store_si128((__m128i*)ptr, blanking);
         ptr += 8;
     }
 #endif
@@ -486,6 +489,10 @@ static void prepare_buffers(AVFormatContext *s)
 
     sdi->line_buf = av_malloc(line_len * sizeof(uint16_t));
     sdi->blank = av_malloc(line_len * sizeof(uint16_t));
+    // A whole frame, packed to ten bits and padded, with room for the wide store the
+    // last step of the packing loop makes past the bytes it wants.
+    sdi->frame_size = sdi->sdi_info->nr_sdi_lines * line_len * 10 / 8 + sdi->frame_padding;
+    sdi->frame_buf = av_malloc(sdi->frame_size + 16);
 
     for (int i = 0; i < FFMIN(s->nb_streams, MAX_STREAMS); ++i) {
         sdi->buffer[i] = ff_sdi_buffer_alloc(s->streams[i]);
@@ -676,6 +683,7 @@ static void sdi_deinit(AVFormatContext *s)
     SdiMuxContext *sdi = s->priv_data;
     av_free (sdi->blank);
     av_free (sdi->line_buf);
+    av_free (sdi->frame_buf);
     ff_sdi_audio_freep(&sdi->audio);
     for (int i = 0; i < FFMIN(s->nb_streams, MAX_STREAMS); ++i) {
         ff_sdi_buffer_freep(&sdi->buffer[i]);
@@ -765,10 +773,11 @@ static void update_crc(uint32_t *crc, int nr_ch, uint16_t* pin, int n)
 }
 
 /*
- * Write the 10 LSBs in each word of pin packed to the stream.
+ * Pack the 10 LSBs in each word of pin into the frame buffer. A whole frame is packed
+ * before any of it is handed to the stream: a write per line, let alone per ten bytes,
+ * costs more than the packing itself.
  */
-static void write_10b_packed(AVIOContext *pb, SdiMuxContext *sdi,
-        const uint16_t *pin, int len)
+static void write_10b_packed(SdiMuxContext *sdi, const uint16_t *pin, int len)
 {
     #define Z (uint8_t)0x80
     #define multiplier (_mm_set_epi16(64, 16, 4, 1, 64, 16, 4, 1))
@@ -776,7 +785,9 @@ static void write_10b_packed(AVIOContext *pb, SdiMuxContext *sdi,
     #define shuffle_odd (_mm_set_epi8(Z, Z, Z, Z, Z, Z, 15, 14, 11, 10, Z, 7, 6, 3, 2, Z))
 
     int symlen = 10;
-    while (sdi->bitpos != 0 && len--) {
+    uint8_t *out = sdi->frame_ptr;
+
+    while (sdi->bitpos != 0 && len > 0) {
         // Store word
         sdi->out_word[0] |= *pin << sdi->bitpos;
         sdi->out_word[1] = (*pin >> (31 - sdi->bitpos)) >> 1;
@@ -784,15 +795,16 @@ static void write_10b_packed(AVIOContext *pb, SdiMuxContext *sdi,
         // if 32 bits or more collected, store them
         if ((sdi->bitpos >> 5) > 0)
         {
-            avio_write(pb, (const unsigned char*)sdi->out_word, 4);
+            memcpy(out, sdi->out_word, 4);
+            out += 4;
             sdi->out_word[0] = sdi->out_word[1];
         }
         sdi->bitpos &= 0x1F;
         pin++;
+        len--;
     }
 #if HAVE_INTRINSICS_SSE2
     if (X86_SSSE3(av_get_cpu_flags())) {
-        uint8_t buffer[16];
         while (len >= 8) {
             __m128i symbols, symbols_even, symbols_odd;
 
@@ -800,9 +812,11 @@ static void write_10b_packed(AVIOContext *pb, SdiMuxContext *sdi,
             symbols = _mm_mullo_epi16(symbols, multiplier);
             symbols_even = _mm_shuffle_epi8(symbols, shuffle_even);
             symbols_odd = _mm_shuffle_epi8(symbols, shuffle_odd);
-            _mm_storeu_si128((__m128i*)buffer, _mm_or_si128(symbols_even, symbols_odd));
+            // Six bytes past the ten wanted are written, which the next step, the rest
+            // of the frame or the slack at the end of the buffer takes.
+            _mm_storeu_si128((__m128i*)out, _mm_or_si128(symbols_even, symbols_odd));
 
-            avio_write(pb, buffer, 10);
+            out += 10;
             pin += 8;
             len -= 8;
         }
@@ -816,12 +830,15 @@ static void write_10b_packed(AVIOContext *pb, SdiMuxContext *sdi,
         // if 32 bits or more collected, store them
         if ((sdi->bitpos >> 5) > 0)
         {
-            avio_write(pb, (const unsigned char*)sdi->out_word, 4);
+            memcpy(out, sdi->out_word, 4);
+            out += 4;
             sdi->out_word[0] = sdi->out_word[1];
         }
         sdi->bitpos &= 0x1F;
         pin++;
     }
+
+    sdi->frame_ptr = out;
 
     #undef Z
     #undef multiplier
@@ -909,6 +926,7 @@ static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt)
 
     sdi->out_word[0] = sdi->out_word[1] = 0;
     sdi->bitpos = 0;
+    sdi->frame_ptr = sdi->frame_buf;
 
     if (sdi->audio) {
         sdi->audio->pkt_cnt = 0;
@@ -992,8 +1010,8 @@ static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt)
             }
         }
 
-        // convert line to 10-bit, write to file
-        write_10b_packed(s->pb, sdi, sdi->line_buf, line_len);
+        // convert line to 10-bit
+        write_10b_packed(sdi, sdi->line_buf, line_len);
     }
 
     sdi->next_pts += 1;
@@ -1016,12 +1034,16 @@ static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt)
     if (sdi->audio)
         ff_sdi_audio_frame_end(sdi->audio);
 
-    // Write remaining data and padding, if any.
+    // Add remaining data and padding, if any, and write the frame in one go.
     if (sdi->bitpos > 0) {
-        avio_write(s->pb, (const unsigned char*)sdi->out_word, sdi->bitpos / 8);
+        memcpy(sdi->frame_ptr, sdi->out_word, sdi->bitpos / 8);
+        sdi->frame_ptr += sdi->bitpos / 8;
     }
-    while (pad--)
-        avio_w8(s->pb, 0x00);
+    if (pad > 0) {
+        memset(sdi->frame_ptr, 0, pad);
+        sdi->frame_ptr += pad;
+    }
+    avio_write(s->pb, sdi->frame_buf, sdi->frame_ptr - sdi->frame_buf);
 
     return 0;
 }

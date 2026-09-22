@@ -636,6 +636,13 @@ static int outpchannel_write_header(AVFormatContext *s)
     context->avio =
         avio_alloc_context(context->avio_buffer, context->avio_buffer_size, 1,
                            context, NULL, &write_packet, NULL);
+    if (!context->avio) {
+        av_log(s, AV_LOG_ERROR, "Could not allocate avio context\n");
+        return -1;
+    }
+    // The sdi muxer hands over a whole frame at a time, so let it go straight to the
+    // channel instead of being copied through the buffer first.
+    context->avio->direct = 1;
     
     context->format_context = avformat_alloc_context();
     if (!context->format_context) {
