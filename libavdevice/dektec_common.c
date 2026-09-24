@@ -139,7 +139,7 @@ int ff_dektec_get_linkstd(SdiFormat sdi_fmt)
     if (sdi_fmt < 0 || sdi_fmt >= SDI_FMT_NB)
         return -1;
     info = av_sdi_info(sdi_fmt);
-    if (!ff_has_sub_images(info->payload_format))
+    if (info->payload_format != 0xc0 && info->payload_format != 0xce)
         return -1;
     return info->payload_format == 0xce ? 3 : 2;
 }
