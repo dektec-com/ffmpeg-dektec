@@ -763,9 +763,7 @@ static int avfifo_configure_video(AVFormatContext *s, AvFifo_RxFifo *fifo,
         av_log(s, AV_LOG_DEBUG, "pts[%d]=%"PRId64"\n", i, pts[i]);
 
         if (i == 0) {
-            int res = 0;
-            res = GetFrameProperties(frame, &properties);
-            if (res < 0) {
+            if (GetFrameProperties(frame, &properties) != DTAPI_OK) {
                 av_log(s, AV_LOG_ERROR, "Could not detect video standard\n");
                 return AVERROR(EAGAIN);
             }
