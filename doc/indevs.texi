@@ -508,6 +508,25 @@ deduced from the video input parameters.
 Set how long to wait for a signal on an SDI port before giving up. Default is
 5 seconds; a negative value, such as -1, waits without a limit.
 
+@item threads
+Set how many threads an SDI frame is converted over. Converting a 2160p frame is
+more than one slow core has time for at 50 or 60 frames a second. The values
+mean what they mean for a codec:
+
+@table @samp
+@item auto, 0
+The default. Start 4 threads, and divide each frame as its standard calls for: 4
+pieces for 2160p50 and 2160p60, 2 for 2160p24 to 2160p30, and none up to 3G-SDI,
+where the threads stay idle.
+@item 1
+One thread: the thread that reads does the whole frame.
+@item 2 or more
+Start that many threads, and divide every frame into as many pieces.
+@end table
+
+This option shares its name with the decoders' @option{threads}, and the
+@command{ffmpeg} tool gives a value to both.
+
 @end table
 
 @subsection Examples

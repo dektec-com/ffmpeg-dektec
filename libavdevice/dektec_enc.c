@@ -82,6 +82,7 @@ typedef struct DekTecMuxContext {
     int ps;                         // RTP payload size
     int pt;                         // RTP payload type
     int sch;                        // Scheduling mode
+    int threads;                    // The threads option: FF_DEKTEC_THREADS_AUTO, 1 or 2+
     char *url_v;                    // Video URL
     char *url_a[MAX_AUDIO_STREAMS]; // Audio URLS
     int is_interlaced;
@@ -108,6 +109,8 @@ typedef struct DekTecMuxContext {
 #define St2110_PackingMode_Line 2
 static const AVOption options[] = {
     { "sdi_standard", "", OFFSET(option_standard), AV_OPT_TYPE_STRING, {.str = ""}, 0, 0, AV_OPT_FLAG_ENCODING_PARAM, NULL},
+    { "threads", "threads an SDI frame is coded over: auto, 1 for one, or more", OFFSET(threads), AV_OPT_TYPE_INT, { .i64 = FF_DEKTEC_THREADS_AUTO }, 0, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM, "threads"},
+    { "auto", "4 threads, and as many pieces as the standard calls for", 0, AV_OPT_TYPE_CONST, { .i64 = FF_DEKTEC_THREADS_AUTO }, 0, 0, AV_OPT_FLAG_ENCODING_PARAM, "threads"},
 
     { "aspp", "Number of audio samples per packet", OFFSET(aspp), AV_OPT_TYPE_INT, {.i64 = 48}, 1, INT_MAX, AUDIO_ENC_FLAGS, NULL},
 
@@ -567,6 +570,10 @@ static int outpchannel_write_header(AVFormatContext *s)
         av_log(s, AV_LOG_ERROR, "Could not set TX control to IDLE\n");
         return -1;
     }
+
+    ret = ff_dektec_give_output_threads(s, context->output, context->threads);
+    if (ret < 0)
+        return ret;
 
     for (int i = 0; i < s->nb_streams; i++) {
         if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {

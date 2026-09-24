@@ -313,6 +313,25 @@ Force 10-bit video output.
 Automatic pixel format conversion is done to get the right pixel format for the
 hardware.
 
+@item threads
+Set how many threads an SDI frame is coded over. Converting a 2160p frame is
+more than one slow core has time for at 50 or 60 frames a second. The values
+mean what they mean for a codec:
+
+@table @samp
+@item auto, 0
+The default. Start 4 threads, and divide each frame as its standard calls for: 4
+pieces for 2160p50 and 2160p60, 2 for 2160p24 to 2160p30, and none up to 3G-SDI,
+where the threads stay idle.
+@item 1
+One thread: the thread that writes does the whole frame.
+@item 2 or more
+Start that many threads, and divide every frame into as many pieces.
+@end table
+
+This option shares its name with the encoders' @option{threads}, and the
+@command{ffmpeg} tool gives a value to both.
+
 @item pm
 Set the SMPTE-2110 packing mode. Available values are:
 

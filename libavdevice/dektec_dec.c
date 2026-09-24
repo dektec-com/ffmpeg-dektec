@@ -97,6 +97,7 @@ typedef struct DekTecDemuxContext {
     char *option_standard;
     int64_t timestamp_align;
     int64_t signal_timeout;         // How long to wait for a signal; negative: no limit
+    int threads;                    // The threads option: FF_DEKTEC_THREADS_AUTO, 1 or 2+
     int has_signal;
     int64_t signal_lost_ts;
     DtDetVidStd detected_standard;
@@ -350,6 +351,7 @@ static int inpchannel_read_header(AVFormatContext *s)
     DekTecDemuxContext* context = (DekTecDemuxContext*)s->priv_data;
     const int rx_mode = DTAPI_RXMODE_SDI_FULL | DTAPI_RXMODE_SDI_10B;
     unsigned int result = 0;
+    int ret;
     int io_standard = 0;
     int sub_value = 0;
     StandardOption option = {0};
@@ -417,6 +419,10 @@ static int inpchannel_read_header(AVFormatContext *s)
         av_log(s, AV_LOG_ERROR, "Could not set RX control to IDLE\n");
         return -1;
     }
+
+    ret = ff_dektec_give_input_threads(s, context->input, context->threads);
+    if (ret < 0)
+        return ret;
 
     if (strlen(context->option_standard) > 0)
         result = av_parse_standard_option(s, context->option_standard, &option);
@@ -1588,6 +1594,8 @@ static const AVOption options[] = {
     { "sdi_standard", "", OFFSET(option_standard), AV_OPT_TYPE_STRING, {.str = ""}, 0, 0, AV_OPT_FLAG_DECODING_PARAM, NULL},
     { "timestamp_align", "capture start time alignment (in seconds)", OFFSET(timestamp_align), AV_OPT_TYPE_DURATION, { .i64 = 0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM, NULL},
     { "signal_timeout", "how long to wait for an SDI signal, negative without limit", OFFSET(signal_timeout), AV_OPT_TYPE_DURATION, { .i64 = 5000000 }, -INT64_MAX, INT64_MAX, AV_OPT_FLAG_DECODING_PARAM, NULL},
+    { "threads", "threads an SDI frame is converted over: auto, 1 for one, or more", OFFSET(threads), AV_OPT_TYPE_INT, { .i64 = FF_DEKTEC_THREADS_AUTO }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM, "threads"},
+    { "auto", "4 threads, and as many pieces as the standard calls for", 0, AV_OPT_TYPE_CONST, { .i64 = FF_DEKTEC_THREADS_AUTO }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, "threads"},
 
     { "pt",   "RTP payload type", OFFSET(pt),    AV_OPT_TYPE_INT, {.i64 = 96}, 96, 127, AV_OPT_FLAG_DECODING_PARAM, NULL},
 
