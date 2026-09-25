@@ -259,7 +259,7 @@ int ff_dektec_parse_url(void *ctx, char *url_arg, int pt_arg,
 
 /* A pool of the threads the option asks for, and the pieces the channel is to take,
  * 0 for as many as its standard calls for; *pool is NULL for none. */
-static int work_pool(void *ctx, int threads, DtWorkPool **pool, int *num_pieces)
+static int worker_pool(void *ctx, int threads, DtWorkerPool **pool, int *num_pieces)
 {
     int num_threads = threads == FF_DEKTEC_THREADS_AUTO ? FF_DEKTEC_AUTO_THREADS : threads;
     unsigned int result;
@@ -269,14 +269,14 @@ static int work_pool(void *ctx, int threads, DtWorkPool **pool, int *num_pieces)
     if (num_threads < 2)
         return 0;
 
-    *pool = DtWorkPool_Alloc();
+    *pool = DtWorkerPool_Alloc();
     if (!*pool)
         return AVERROR(ENOMEM);
-    result = DtWorkPool_StartThreads(*pool, num_threads);
+    result = DtWorkerPool_StartThreads(*pool, num_threads);
     if (result != DTAPI_OK) {
         av_log(ctx, AV_LOG_ERROR, "Could not start %d threads: %s\n", num_threads,
                DtapiResult2Str(result));
-        DtWorkPool_Freep(pool);
+        DtWorkerPool_Freep(pool);
         return AVERROR(ENOMEM);
     }
     *num_pieces = threads == FF_DEKTEC_THREADS_AUTO ? 0 : threads;
@@ -286,15 +286,15 @@ static int work_pool(void *ctx, int threads, DtWorkPool **pool, int *num_pieces)
 /* The channel holds the pool it is given, so the device lets go of its own hold at once. */
 int ff_dektec_give_input_threads(void *ctx, DtInpChannel *channel, int threads)
 {
-    DtWorkPool *pool;
+    DtWorkerPool *pool;
     int num_pieces;
     unsigned int result;
-    int ret = work_pool(ctx, threads, &pool, &num_pieces);
+    int ret = worker_pool(ctx, threads, &pool, &num_pieces);
 
     if (ret < 0 || !pool)
         return ret;
-    result = DtInpChannel_SetWorkPool(channel, pool, num_pieces);
-    DtWorkPool_Freep(&pool);
+    result = DtInpChannel_SetWorkerPool(channel, pool, num_pieces);
+    DtWorkerPool_Freep(&pool);
     if (result != DTAPI_OK) {
         av_log(ctx, AV_LOG_ERROR, "Could not give the input channel its threads: %s\n",
                DtapiResult2Str(result));
@@ -305,15 +305,15 @@ int ff_dektec_give_input_threads(void *ctx, DtInpChannel *channel, int threads)
 
 int ff_dektec_give_output_threads(void *ctx, DtOutpChannel *channel, int threads)
 {
-    DtWorkPool *pool;
+    DtWorkerPool *pool;
     int num_pieces;
     unsigned int result;
-    int ret = work_pool(ctx, threads, &pool, &num_pieces);
+    int ret = worker_pool(ctx, threads, &pool, &num_pieces);
 
     if (ret < 0 || !pool)
         return ret;
-    result = DtOutpChannel_SetWorkPool(channel, pool, num_pieces);
-    DtWorkPool_Freep(&pool);
+    result = DtOutpChannel_SetWorkerPool(channel, pool, num_pieces);
+    DtWorkerPool_Freep(&pool);
     if (result != DTAPI_OK) {
         av_log(ctx, AV_LOG_ERROR, "Could not give the output channel its threads: %s\n",
                DtapiResult2Str(result));
