@@ -794,13 +794,10 @@ static int avfifo_init_txfifo(AVFormatContext *s, AvFifo_TxFifo **fifo, char *ur
     if (url) {
         AvFifo_IpPars ippars = {0};
         int ret = ff_dektec_parse_url(s, url, context->pt, &ippars);
-        if (ret < 0) {
-            av_free(ippars.SrcFlt);
+        if (ret < 0)
             return ret;
-        }
 
         AvFifo_TxFifo_SetIpPars(*fifo, &ippars);
-        av_free(ippars.SrcFlt);
     } else {
         av_log(s, AV_LOG_ERROR, "Please provide url argument\n");
         return AVERROR(EINVAL);

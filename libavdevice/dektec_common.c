@@ -211,12 +211,11 @@ int ff_dektec_parse_url(void *ctx, char *url_arg, int pt_arg,
     // log_addrinfo(ctx, ai, "URL resolved to");
 
     if (src_ai) {
-        ippars->SrcFlt = av_mallocz(sizeof(IpSrcFlt));
         ippars->NSrcFlt = 1;
-        ippars->SrcFlt->Port = src_port;
+        ippars->SrcFlt[0].Port = src_port;
         if (src_ai->ai_family == PF_INET) {
             struct sockaddr_in *addr = (struct sockaddr_in *)src_ai->ai_addr;
-            memcpy(ippars->SrcFlt->IpAddr, &addr->sin_addr,
+            memcpy(ippars->SrcFlt[0].IpAddr, &addr->sin_addr,
                    sizeof(struct in_addr));
         } else if (src_ai) {
             av_log(ctx, AV_LOG_ERROR, "Invalid source address\n");

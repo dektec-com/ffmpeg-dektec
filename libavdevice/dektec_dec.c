@@ -690,13 +690,10 @@ static int avfifo_init_rxfifo(AVFormatContext *s, AvFifo_RxFifo **fifo, char *ur
     if (url) {
         AvFifo_IpPars ippars = {0};
         int ret = ff_dektec_parse_url(s, url, context->pt, &ippars);
-        if (ret < 0) {
-            av_free(ippars.SrcFlt);
+        if (ret < 0)
             return ret;
-        }
 
         AvFifo_RxFifo_SetIpPars(*fifo, &ippars);
-        av_free(ippars.SrcFlt);
     } else {
         return AVERROR(EINVAL);
     }
