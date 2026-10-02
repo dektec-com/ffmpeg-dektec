@@ -153,6 +153,11 @@ if [ $fate = yes ]; then
         export LD_LIBRARY_PATH="$libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         export PATH="$libs:$PATH"
     fi
+    # On Windows a CDTAPI built as a DLL, and what it links, such as dtnmos with the NMOS
+    # bridge, are found on the path, in the prefix's bin.
+    if [ $platform = windows ] && [ -d "$cdtapi/bin" ]; then
+        export PATH="$cdtapi/bin:$PATH"
+    fi
     make -k fate-sdi fate-dektec
 fi
 [ $install = no ] || make install
