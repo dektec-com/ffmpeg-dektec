@@ -478,7 +478,42 @@ DekTec devices are identified by their serial number and port number
 
 @item url[:stream_specifier]
 Specify the URL for a video stream (@var{stream_specifier} is 'v') or audio
-stream (@var{stream_specifier} is 'a').
+stream (@var{stream_specifier} is 'a'). With @option{nmos_registry}, the URL
+@samp{nmos} gives a stream whose address an NMOS controller sets: the input
+waits until the controller connects it, see @option{nmos_wait}.
+
+@item nmos_registry
+Register the SMPTE 2110 streams with an NMOS registry, so that an NMOS
+controller can connect them over IS-05. Give the base URL of the registry's
+Registration API, e.g. @samp{http://registry.local}, or @samp{auto} to find
+one on the network with DNS-SD. The port becomes an NMOS node with the port as
+its device. Needs FFmpeg configured with @code{--enable-libcdtapi-nmos}, and a
+CDTAPI built with its NMOS bridge.
+
+@item nmos_label
+Set the label of the NMOS node; the labels of its streams start with it. The
+IDs of the node and its streams follow from the host and the labels, so that
+the same command keeps them when it runs again. Default is
+@samp{ffmpeg-@var{serial}:@var{port}}.
+
+@item nmos_host
+Set the address at which controllers reach the node's APIs. By default it is
+the address of this host on the route to the registry.
+
+@item nmos_port
+Set the port of the node's APIs. Default is 0, any free port.
+
+@item nmos_wait
+Set how long the input waits for a controller to connect the streams whose
+URL is @samp{nmos}. When it passes, opening the input fails and names the
+streams that were not connected. Default is 60 seconds; a negative value waits
+without a limit.
+
+With @option{nmos_registry}, each stream is an NMOS receiver, registered as
+receiving the stream of its URL. A controller may move a receiver to another
+stream of the same format, or disable and enable it. The format of a stream is
+fixed once the input is open, so an activation of another format is refused,
+and the controller is told the format the receiver takes.
 
 @item sample_rate
 Specify the audio samplerate. Available values are:
@@ -549,6 +584,13 @@ ffplay -url:v 239.0.0.5:5678 -url:a 239.0.0.5:5680 -f dektec -i 211000054
 Receive an audio stream with specific parameters via DTA-2110:
 @example
 ffplay -url:a 239.0.0.5:5680 -sample_rate 48000 -bps 24 -n_channels 2 -f dektec -i 211000054
+@end example
+
+@item
+Receive a video stream that an NMOS controller connects, registered with the
+registry the network announces:
+@example
+ffmpeg -f dektec -nmos_registry auto -url:v nmos -i 2110000076:1 -f null -
 @end example
 
 @item

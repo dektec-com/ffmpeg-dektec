@@ -360,7 +360,45 @@ packets. Allowed range is from 1 to 1440.
 @item pt
 Specify the RTP payload type. Default is 96. Allowed range is from 96 to 127.
 
+@item nmos_registry
+Register the SMPTE 2110 streams with an NMOS registry, so that an NMOS
+controller can connect them over IS-05. Give the base URL of the registry's
+Registration API, e.g. @samp{http://registry.local}, or @samp{auto} to find
+one on the network with DNS-SD. The port becomes an NMOS node with the port as
+its device. Needs FFmpeg configured with @code{--enable-libcdtapi-nmos}, and a
+CDTAPI built with its NMOS bridge.
+
+@item nmos_label
+Set the label of the NMOS node; the labels of its streams start with it. The
+IDs of the node and its streams follow from the host and the labels, so that
+the same command keeps them when it runs again. Default is
+@samp{ffmpeg-@var{serial}:@var{port}}.
+
+@item nmos_host
+Set the address at which controllers reach the node's APIs. By default it is
+the address of this host on the route to the registry.
+
+@item nmos_port
+Set the port of the node's APIs. Default is 0, any free port.
+
+With @option{nmos_registry}, each stream is an NMOS sender, whose flow and SDP
+describe what it sends. A controller may move a sender to another destination,
+or disable and enable it; a disabled sender drops its packets until it is
+enabled again.
+
 @end table
+
+@subsection Examples
+
+@itemize
+
+@item
+Send a test pattern with a DTA-2110 as an NMOS sender:
+@example
+ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=25 -c:v wrapped_avframe -pix_fmt uyvy422 -f dektec -url:v 239.100.9.5:5004 -nmos_registry http://registry.local 2110000076:1
+@end example
+
+@end itemize
 
 @subsection Examples
 
