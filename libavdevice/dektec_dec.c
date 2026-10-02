@@ -130,6 +130,7 @@ typedef struct DekTecDemuxContext {
     char *nmos_label;               // The NMOS node's label; NULL for the default
     char *nmos_host;                // The address the node's APIs are reached at
     int nmos_port;                  // The port of the node's APIs; 0 for any free one
+    int64_t nmos_wait;              // How long to wait for the first connections
     FFDektecNmos *nmos;             // The node, while the input is open
     AvFifo_IpPars ippars[MAX_STREAMS]; // The stream of each FIFO, from its URL
 #endif
@@ -700,7 +701,16 @@ static int avfifo_init_rxfifo(AVFormatContext *s, AvFifo_RxFifo **fifo, char *ur
         return -1;
     }
 
-    if (url) {
+    if (url && !strcmp(url, "nmos")) {
+#if CONFIG_LIBCDTAPI_NMOS
+        // NMOS gives the address, once a controller connects the stream's receiver.
+        return 1;
+#else
+        av_log(s, AV_LOG_ERROR, "The URL nmos needs FFmpeg built with "
+               "--enable-libcdtapi-nmos\n");
+        return AVERROR(ENOSYS);
+#endif
+    } else if (url) {
         AvFifo_IpPars ippars = {0};
         int ret = ff_dektec_parse_url(s, url, context->pt, &ippars);
         if (ret < 0)
@@ -1369,43 +1379,76 @@ static int avfifo_read_audio(AVFormatContext *s, AvFifo_RxFifo *fifo,
 
 #if CONFIG_LIBCDTAPI_NMOS
 /**
- * Open the NMOS node when nmos_registry is given, and register each stream as a
- * receiver: "video", and "audio 0", "audio 1" and so on.
+ * Return nonzero when the user stops the program, for ff_dektec_nmos_wait().
+ */
+static int nmos_interrupted(void *opaque)
+{
+    return interrupted(opaque);
+}
+
+/**
+ * Open the NMOS node when nmos_registry is given, register each of the nb FIFOs as a
+ * receiver, "video" and "audio 0", "audio 1" and so on, and wait until a controller has
+ * connected those whose URL is nmos.
  *
+ * @param urls  the URL of each FIFO
  * @return 0, or a negative AVERROR after logging why
  */
-static int nmos_open(AVFormatContext *s)
+static int nmos_open(AVFormatContext *s, char *const *urls, int nb)
 {
     DekTecDemuxContext *context = (DekTecDemuxContext *)s->priv_data;
     FFDektecNmosOptions options = { context->nmos_registry, context->nmos_label,
                                     context->nmos_host, context->nmos_port };
     int audio = 0;
+    int waits = 0;
     int ret;
 
-    if (!context->nmos_registry || !*context->nmos_registry)
-        return 0;
+    for (int i = 0; i < nb; i++)
+        waits |= !strcmp(urls[i], "nmos");
+    if (!context->nmos_registry || !*context->nmos_registry) {
+        if (!waits)
+            return 0;
+        av_log(s, AV_LOG_ERROR, "The URL nmos needs nmos_registry\n");
+        return AVERROR(EINVAL);
+    }
     ret = ff_dektec_nmos_open(s, &options, context->device, context->serial_number,
                               context->port, &context->nmos);
     if (ret < 0)
         return ret;
-    for (int i = 0; i < s->nb_streams; i++) {
-        const AVStream *st = s->streams[i];
-        St2110_RxFrameFormat format = st->codecpar->format == AV_PIX_FMT_UYVY422
-                                          ? St2110_RxFrameFormat_Uyvy422_8b
-                                          : St2110_RxFrameFormat_Uyvy422_10b;
+    for (int i = 0; i < nb && ret >= 0; i++) {
+        // The video stream comes first, as its URL is the first one.
+        int video = urls[i] == context->url[0];
         char name[32];
-        if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+        if (video)
             snprintf(name, sizeof(name), "video");
         else
             snprintf(name, sizeof(name), "audio %d", audio++);
-        ret = ff_dektec_nmos_add_receiver(context->nmos, context->fifos[i], format, st,
-                                          &context->ippars[i], name);
-        if (ret < 0) {
-            ff_dektec_nmos_close(&context->nmos);
-            return ret;
-        }
+        ret = ff_dektec_nmos_add_receiver(
+            context->nmos, context->fifos[i], video ? AVMEDIA_TYPE_VIDEO : AVMEDIA_TYPE_AUDIO,
+            strcmp(urls[i], "nmos") ? &context->ippars[i] : NULL, name);
     }
-    return 0;
+    if (ret >= 0 && waits)
+        ret = ff_dektec_nmos_wait(context->nmos, context->nmos_wait, nmos_interrupted, s);
+    if (ret < 0)
+        ff_dektec_nmos_close(&context->nmos);
+    return ret;
+}
+
+/**
+ * Fix the format of each receiver now that its stream is open.
+ */
+static void nmos_set_streams(AVFormatContext *s)
+{
+    DekTecDemuxContext *context = (DekTecDemuxContext *)s->priv_data;
+
+    for (int i = 0; i < s->nb_streams; i++) {
+        const AVStream *st = s->streams[i];
+        ff_dektec_nmos_set_stream(context->nmos, i,
+                                  st->codecpar->format == AV_PIX_FMT_UYVY422
+                                      ? St2110_RxFrameFormat_Uyvy422_8b
+                                      : St2110_RxFrameFormat_Uyvy422_10b,
+                                  st);
+    }
 }
 
 /**
@@ -1436,6 +1479,7 @@ static int avfifo_read_header(AVFormatContext *s)
     int ret = 0;
     int nb_streams = 0;
     int stream_index = 0;
+    char *urls[MAX_STREAMS];        // The URL of each FIFO, in the order of the streams
 
     context->last_pts = -1;
     context->last_field = -1;
@@ -1455,36 +1499,38 @@ static int avfifo_read_header(AVFormatContext *s)
     
     context->fifos = av_calloc(MAX_STREAMS, sizeof(AvFifo_RxFifo*));
 
+    // Each stream's FIFO is attached and given its URL first, so that NMOS can connect
+    // the streams whose URL is nmos before their formats are detected.
     for (int i = 0; i < MAX_STREAMS; i++) {
         if (!context->url[i]) {
             continue;
         }
-
         ret = avfifo_init_rxfifo(s, &context->fifos[stream_index], context->url[i]);
         if (ret < 0) {
             return ret;
         }
-
-        if (i == 0) {
-            ret = avfifo_configure_video(s, context->fifos[stream_index],
-                                            stream_index);
-            if (ret < 0) {
-                return ret;
-            }
-        } else {
-            ret = avfifo_configure_audio(s, context->fifos[stream_index],
-                                            stream_index);
-            if (ret < 0) {
-                return ret;
-            }
-        }
-        stream_index++;
+        urls[stream_index++] = context->url[i];
     }
 
 #if CONFIG_LIBCDTAPI_NMOS
-    ret = nmos_open(s);
+    ret = nmos_open(s, urls, stream_index);
     if (ret < 0)
         return ret;
+#endif
+
+    for (int idx = 0; idx < stream_index; idx++) {
+        if (urls[idx] == context->url[0]) {
+            ret = avfifo_configure_video(s, context->fifos[idx], idx);
+        } else {
+            ret = avfifo_configure_audio(s, context->fifos[idx], idx);
+        }
+        if (ret < 0) {
+            return ret;
+        }
+    }
+
+#if CONFIG_LIBCDTAPI_NMOS
+    nmos_set_streams(s);
 #endif
     return 1;
 }
@@ -1712,6 +1758,7 @@ static const AVOption options[] = {
     { "nmos_label", "the label of the NMOS node; ffmpeg-<serial>:<port> when not given", OFFSET(nmos_label), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AV_OPT_FLAG_DECODING_PARAM, NULL},
     { "nmos_host", "the address at which controllers reach the NMOS node", OFFSET(nmos_host), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AV_OPT_FLAG_DECODING_PARAM, NULL},
     { "nmos_port", "the port of the NMOS node's APIs, 0 for any free one", OFFSET(nmos_port), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 65535, AV_OPT_FLAG_DECODING_PARAM, NULL},
+    { "nmos_wait", "how long to wait for a controller to connect the streams whose URL is nmos, negative without limit", OFFSET(nmos_wait), AV_OPT_TYPE_DURATION, {.i64 = 60000000}, -INT64_MAX, INT64_MAX, AV_OPT_FLAG_DECODING_PARAM, NULL},
 #endif
 
     { NULL },

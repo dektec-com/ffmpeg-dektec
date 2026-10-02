@@ -53,11 +53,14 @@
  * that the same host and label give the same node each time. */
 static const DtNmosId nmos_namespace = { "7b1e4c92-3d58-4f0a-a6c7-91e2f5d8b304" };
 
-/* A receiver: its FIFO, and the format a controller's activation must keep. */
+/* A receiver: its FIFO, and the format a controller's activation must keep once the
+ * stream is open. Before that, an activation only gives the FIFO its address. */
 typedef struct Receiver {
     FFDektecNmos *nmos;            ///< The node it belongs to
     AvFifo_RxFifo *fifo;           ///< The FIFO a change is applied to
     int stream_index;              ///< The index of the stream the FIFO feeds
+    int has_address;               ///< 1 once the FIFO knows what to receive
+    int configured;                ///< 1 once the stream is open and its format fixed
     St2110_RxFrameFormat format;   ///< The frame format the FIFO delivers video in
     enum AVMediaType media;        ///< Video or audio
     int width, height;             ///< Video: the frame size
@@ -95,6 +98,7 @@ struct FFDektecNmos {
     int abandoned;                 ///< 1 when the asker stopped waiting for a taken request
     Receiver *receiver;            ///< The receiver the request is for
     DtNmosAvFifoRxChange change;   ///< The change to apply
+    int made_open;                 ///< 1 when the change was made for an open stream
     unsigned int result;           ///< The result of applying it, DTAPI_OK or an error
     char message[256];             ///< Why it failed
 };
@@ -122,11 +126,13 @@ static struct timespec deadline_after(int64_t timeout_us)
 
 /**
  * Ask read_packet's thread to apply change to receiver r, and wait for its answer. Runs
- * on the node's thread.
+ * on the node's thread. made_open says whether the change was made for the stream's
+ * fixed format, or before the stream was open.
  *
  * @return DTNMOS_OK, or an error that the node passes to the controller
  */
-static DtNmosResult ask_owner(Receiver *r, const DtNmosAvFifoRxChange *change)
+static DtNmosResult ask_owner(Receiver *r, const DtNmosAvFifoRxChange *change,
+                              int made_open)
 {
     FFDektecNmos *nmos = r->nmos;
     struct timespec deadline = deadline_after(ANSWER_TIMEOUT_US);
@@ -146,6 +152,7 @@ static DtNmosResult ask_owner(Receiver *r, const DtNmosAvFifoRxChange *change)
     }
     nmos->receiver = r;
     nmos->change = *change;
+    nmos->made_open = made_open;
     nmos->state = MAIL_POSTED;
     ff_cond_broadcast(&nmos->changed);
 
@@ -240,19 +247,26 @@ static DtNmosResult activate_receiver(void *user, const DtNmosId *id,
                                       const DtNmosReceiverActivation *activation)
 {
     Receiver *r = user;
+    Receiver now;
     DtNmosAvFifoRxChange change;
     char message[256];
 
     (void)id;
-    if (activation->MasterEnable && activation->HasFlow &&
-        !same_format(r, &activation->Flow, message, sizeof(message))) {
+    /* read_header may be fixing the format while the node calls this. */
+    ff_mutex_lock(&r->nmos->lock);
+    now = *r;
+    ff_mutex_unlock(&r->nmos->lock);
+    if (now.configured && activation->MasterEnable && activation->HasFlow &&
+        !same_format(&now, &activation->Flow, message, sizeof(message))) {
         av_log(r->nmos->log_ctx, AV_LOG_WARNING, "NMOS: %s\n", message);
         return DtNmos_SetLastError(DTNMOS_E_INVALID_ARGUMENT, message);
     }
     memset(&change, 0, sizeof(change));
-    if (DtNmosAvFifo_RxChangeFromActivation(activation, r->format, &change) != DTAPI_OK)
+    if (DtNmosAvFifo_RxChangeFromActivation(
+            activation, now.configured ? now.format : St2110_RxFrameFormat_Raw, &change) !=
+        DTAPI_OK)
         return DtNmos_SetLastError(DTNMOS_E_INVALID_ARGUMENT, GetLastException());
-    return ask_owner(r, &change);
+    return ask_owner(r, &change, now.configured);
 }
 
 /**
@@ -353,12 +367,10 @@ fail:
 }
 
 int ff_dektec_nmos_add_receiver(FFDektecNmos *nmos, AvFifo_RxFifo *fifo,
-                                St2110_RxFrameFormat format, const AVStream *st,
-                                const AvFifo_IpPars *ippars, const char *name)
+                                enum AVMediaType media, const AvFifo_IpPars *ippars,
+                                const char *name)
 {
-    int size = ippars->IpVersion == IpProtocolVersion_IPv6 ? 16 : 4;
     char group[64] = "", source[64] = "";
-    const AVCodecParameters *par = st->codecpar;
     Receiver *r;
     DtNmosReceiverConfig config;
     DtNmosId id;
@@ -370,10 +382,48 @@ int ff_dektec_nmos_add_receiver(FFDektecNmos *nmos, AvFifo_RxFifo *fifo,
     memset(r, 0, sizeof(*r));
     r->nmos = nmos;
     r->fifo = fifo;
-    r->stream_index = st->index;
-    r->format = format;
-    r->media = par->codec_type;
+    r->stream_index = nmos->nb_receivers;
+    r->media = media;
+    r->has_address = ippars != NULL;
     av_strlcpy(r->name, name, sizeof(r->name));
+
+    memset(&config, 0, sizeof(config));
+    config.Size = sizeof(config);
+    config.DeviceId = nmos->device_id;
+    snprintf(label, sizeof(label), "%s %s", nmos->label, name);
+    config.Label = label;
+    config.Media = r->media == AVMEDIA_TYPE_VIDEO ? DTNMOS_MEDIA_VIDEO : DTNMOS_MEDIA_AUDIO;
+    /* The receiver's first stream: a group it joins, or unicast to the port's own
+     * address when the destination is not a group; and the one source it takes. */
+    if (ippars) {
+        int size = ippars->IpVersion == IpProtocolVersion_IPv6 ? 16 : 4;
+        if (size == 4 ? (ippars->IpAddr[0] & 0xF0) == 0xE0 : ippars->IpAddr[0] == 0xFF)
+            address_text(ippars->IpAddr, size, group, sizeof(group));
+        if (ippars->NSrcFlt > 0)
+            address_text(ippars->SrcFlt[0].IpAddr, size, source, sizeof(source));
+        config.MulticastIp = group;
+        config.SourceIp = source;
+        config.DestinationPort = (uint16_t)ippars->Port;
+    }
+    if (DtNmosAvFifo_AddReceiver(nmos->node, fifo, &config, activate_receiver, r, &id) !=
+        DTAPI_OK)
+        return failed(nmos->log_ctx, "Adding a receiver", GetLastException());
+    nmos->nb_receivers++;
+    av_log(nmos->log_ctx, AV_LOG_INFO, "NMOS: receiver %s, \"%s\"\n", id.Text, label);
+    return 0;
+}
+
+void ff_dektec_nmos_set_stream(FFDektecNmos *nmos, int index, St2110_RxFrameFormat format,
+                               const AVStream *st)
+{
+    const AVCodecParameters *par = st->codecpar;
+    Receiver *r;
+
+    if (!nmos || index < 0 || index >= nmos->nb_receivers)
+        return;
+    r = &nmos->receivers[index];
+    ff_mutex_lock(&nmos->lock);
+    r->format = format;
     if (r->media == AVMEDIA_TYPE_VIDEO) {
         r->width = par->width;
         r->height = par->height;
@@ -386,28 +436,44 @@ int ff_dektec_nmos_add_receiver(FFDektecNmos *nmos, AvFifo_RxFifo *fifo,
         r->channels = par->ch_layout.nb_channels;
         r->bits = par->bits_per_raw_sample;
     }
+    r->configured = 1;
+    ff_mutex_unlock(&nmos->lock);
+}
 
-    memset(&config, 0, sizeof(config));
-    config.Size = sizeof(config);
-    config.DeviceId = nmos->device_id;
-    snprintf(label, sizeof(label), "%s %s", nmos->label, name);
-    config.Label = label;
-    config.Media = r->media == AVMEDIA_TYPE_VIDEO ? DTNMOS_MEDIA_VIDEO : DTNMOS_MEDIA_AUDIO;
-    /* The receiver's first stream: a group it joins, or unicast to the port's own
-     * address when the destination is not a group; and the one source it takes. */
-    if (size == 4 ? (ippars->IpAddr[0] & 0xF0) == 0xE0 : ippars->IpAddr[0] == 0xFF)
-        address_text(ippars->IpAddr, size, group, sizeof(group));
-    if (ippars->NSrcFlt > 0)
-        address_text(ippars->SrcFlt[0].IpAddr, size, source, sizeof(source));
-    config.MulticastIp = group;
-    config.SourceIp = source;
-    config.DestinationPort = (uint16_t)ippars->Port;
-    if (DtNmosAvFifo_AddReceiver(nmos->node, fifo, &config, activate_receiver, r, &id) !=
-        DTAPI_OK)
-        return failed(nmos->log_ctx, "Adding a receiver", GetLastException());
-    nmos->nb_receivers++;
-    av_log(nmos->log_ctx, AV_LOG_INFO, "NMOS: receiver %s, \"%s\"\n", id.Text, label);
-    return 0;
+int ff_dektec_nmos_wait(FFDektecNmos *nmos, int64_t timeout_us,
+                        int (*interrupted)(void *opaque), void *opaque)
+{
+    int64_t end = timeout_us < 0 ? INT64_MAX : av_gettime_relative() + timeout_us;
+    char names[256];
+    int waiting;
+
+    for (int logged = 0;; logged = 1) {
+        ff_dektec_nmos_poll(nmos);
+        names[0] = '\0';
+        waiting = 0;
+        ff_mutex_lock(&nmos->lock);
+        for (int i = 0; i < nmos->nb_receivers; i++) {
+            if (!nmos->receivers[i].has_address) {
+                av_strlcatf(names, sizeof(names), "%s%s", waiting ? ", " : "",
+                            nmos->receivers[i].name);
+                waiting++;
+            }
+        }
+        ff_mutex_unlock(&nmos->lock);
+        if (!waiting)
+            return 0;
+        if (!logged)
+            av_log(nmos->log_ctx, AV_LOG_INFO,
+                   "NMOS: waiting for a controller to connect %s\n", names);
+        if (interrupted(opaque))
+            return AVERROR_EXIT;
+        if (av_gettime_relative() >= end) {
+            av_log(nmos->log_ctx, AV_LOG_ERROR,
+                   "NMOS: no controller connected %s within nmos_wait\n", names);
+            return AVERROR(ETIMEDOUT);
+        }
+        av_usleep(10000);
+    }
 }
 
 int ff_dektec_nmos_poll(FFDektecNmos *nmos)
@@ -415,6 +481,8 @@ int ff_dektec_nmos_poll(FFDektecNmos *nmos)
     Receiver *r;
     DtNmosAvFifoRxChange change;
     unsigned int result;
+    int configured, made_open;
+    const char *why;
 
     if (!nmos)
         return -1;
@@ -425,15 +493,31 @@ int ff_dektec_nmos_poll(FFDektecNmos *nmos)
     }
     r = nmos->receiver;
     change = nmos->change;
+    configured = r->configured;
+    made_open = nmos->made_open;
     nmos->state = MAIL_TAKEN;
     ff_mutex_unlock(&nmos->lock);
 
-    result = DtNmosAvFifo_ApplyRxChange(r->fifo, &change);
+    /* Before the stream is open, the FIFO is stopped and only learns its address; its
+     * format comes from the frames that then arrive. A change made before the stream
+     * opened, but taken after, was made for no format and is not applied. */
+    if (configured != made_open)
+        result = DTAPI_E_STATE;
+    else if (configured)
+        result = DtNmosAvFifo_ApplyRxChange(r->fifo, &change);
+    else if (change.MasterEnable)
+        result = AvFifo_RxFifo_SetIpPars(r->fifo, &change.IpPars);
+    else
+        result = DTAPI_OK;
+    why = result == DTAPI_OK         ? ""
+          : configured != made_open ? "The stream opened meanwhile; connect it again"
+                                    : GetLastException();
 
     ff_mutex_lock(&nmos->lock);
+    if (!configured && change.MasterEnable && result == DTAPI_OK)
+        r->has_address = 1;
     nmos->result = result;
-    av_strlcpy(nmos->message, result == DTAPI_OK ? "" : GetLastException(),
-               sizeof(nmos->message));
+    av_strlcpy(nmos->message, why, sizeof(nmos->message));
     nmos->state = nmos->abandoned ? MAIL_EMPTY : MAIL_ANSWERED;
     nmos->abandoned = 0;
     ff_cond_broadcast(&nmos->changed);
@@ -441,11 +525,11 @@ int ff_dektec_nmos_poll(FFDektecNmos *nmos)
 
     if (result != DTAPI_OK)
         av_log(nmos->log_ctx, AV_LOG_ERROR, "NMOS: receiver %s: the change failed: %s\n",
-               r->name, GetLastException());
+               r->name, why);
     else
         av_log(nmos->log_ctx, AV_LOG_INFO, "NMOS: receiver %s %s\n", r->name,
                change.MasterEnable ? "connected" : "disabled");
-    return r->stream_index;
+    return configured ? r->stream_index : -1;
 }
 
 void ff_dektec_nmos_close(FFDektecNmos **pnmos)

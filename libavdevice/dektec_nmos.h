@@ -29,10 +29,14 @@
  * thread that reads the FIFOs may change them, so the change waits in a mailbox until
  * that thread calls ff_dektec_nmos_poll(). The steps:
  *
- *   1. ff_dektec_nmos_open() when the FIFOs are configured, at the end of read_header;
- *   2. ff_dektec_nmos_add_receiver() for each stream;
- *   3. ff_dektec_nmos_poll() often from read_packet, also while it waits for data;
- *   4. ff_dektec_nmos_close() in read_close, before the FIFOs stop.
+ *   1. ff_dektec_nmos_open() in read_header, once the FIFOs are attached;
+ *   2. ff_dektec_nmos_add_receiver() for each stream, with its address, or without one
+ *      for a stream whose URL is nmos;
+ *   3. ff_dektec_nmos_wait() until a controller has connected every receiver that has
+ *      no address;
+ *   4. ff_dektec_nmos_set_stream() for each stream, once it is open;
+ *   5. ff_dektec_nmos_poll() often from read_packet, also while it waits for data;
+ *   6. ff_dektec_nmos_close() in read_close, before the FIFOs stop.
  *
  * A stream's format is fixed once it is open: a controller may move a receiver to
  * another stream of the same format, or disable and enable it, but an activation of
@@ -77,23 +81,49 @@ int ff_dektec_nmos_open(void *log_ctx, const FFDektecNmosOptions *options,
                         DtDevice *device, int64_t serial, int port, FFDektecNmos **nmos);
 
 /**
- * Register a configured receive FIFO as an NMOS receiver of the port. Its label is the
- * node's label followed by name, e.g. "video" or "audio 0", so that its ID stays the
- * same each time the same command runs. Until a controller connects it, the node gives
- * the stream of ippars as what the receiver receives.
+ * Register a receive FIFO as an NMOS receiver of the port. Call it once for each stream,
+ * in the order of the streams. Its label is the node's label followed by name, e.g.
+ * "video" or "audio 0", so that its ID stays the same each time the same command runs.
  *
  * @param nmos    the node
- * @param fifo    the FIFO, configured; it is changed only from ff_dektec_nmos_poll()
- * @param format  the frame format the FIFO delivers video in; not used for audio
- * @param st      the stream the FIFO feeds; its codec parameters are the format a
- *                controller's activation must keep
- * @param ippars  the stream the FIFO receives, from its URL
+ * @param fifo    the FIFO, attached; it is changed only from ff_dektec_nmos_poll()
+ * @param media   video or audio
+ * @param ippars  the stream the FIFO receives, from its URL, which the node gives as
+ *                what the receiver receives; NULL for a stream whose URL is nmos, which
+ *                waits for a controller to connect it
  * @param name    the receiver's name within the node
  * @return 0, or a negative AVERROR after logging why
  */
 int ff_dektec_nmos_add_receiver(FFDektecNmos *nmos, AvFifo_RxFifo *fifo,
-                                St2110_RxFrameFormat format, const AVStream *st,
-                                const AvFifo_IpPars *ippars, const char *name);
+                                enum AVMediaType media, const AvFifo_IpPars *ippars,
+                                const char *name);
+
+/**
+ * Wait until a controller has connected every receiver registered without an address,
+ * applying each connection as it comes, so that its FIFO knows what to receive.
+ *
+ * @param nmos         the node
+ * @param timeout_us   how long to wait, in microseconds; negative without limit
+ * @param interrupted  returns nonzero when the user stops the program
+ * @param opaque       passed to interrupted
+ * @return 0; AVERROR(ETIMEDOUT) after logging the receivers that were not connected;
+ *         or AVERROR_EXIT when interrupted
+ */
+int ff_dektec_nmos_wait(FFDektecNmos *nmos, int64_t timeout_us,
+                        int (*interrupted)(void *opaque), void *opaque);
+
+/**
+ * Fix the format of a receiver once its stream is open: from then on, an activation of
+ * another format is refused.
+ *
+ * @param nmos    the node; NULL does nothing
+ * @param index   the stream's index, which is the receiver's place in the order of
+ *                ff_dektec_nmos_add_receiver()
+ * @param format  the frame format the FIFO delivers video in; not used for audio
+ * @param st      the stream; its codec parameters are the format to keep
+ */
+void ff_dektec_nmos_set_stream(FFDektecNmos *nmos, int index, St2110_RxFrameFormat format,
+                               const AVStream *st);
 
 /**
  * Apply the change a controller asked for, if one waits. Call it from the thread that
@@ -101,7 +131,8 @@ int ff_dektec_nmos_add_receiver(FFDektecNmos *nmos, AvFifo_RxFifo *fifo,
  * disabled receiver can be enabled again.
  *
  * @param nmos  the node; NULL does nothing
- * @return the stream index of the FIFO that was changed, or -1 when none was
+ * @return the stream index of the FIFO that was changed, or -1 when none was or the
+ *         stream is not open yet
  */
 int ff_dektec_nmos_poll(FFDektecNmos *nmos);
 
