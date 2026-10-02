@@ -40,9 +40,14 @@ https://www.dektec.com/downloads/SDK/
   ffplay -f dektec -i <serial>:<port>       shows what an SDI input receives
   ffmpeg -i <file> -f dektec <serial>:<port>  sends a file through an SDI output
 
+On a SMPTE 2110 port, -nmos_registry <url> or -nmos_registry auto registers the streams
+with an NMOS registry, so that a controller can connect them; see the dektec device in
+ffmpeg-devices.
+
 Licence: FFmpeg is LGPL 2.1 or later (COPYING.LGPLv2.1, LICENSE.md); this build has no
-GPL or non-free parts. CDTAPI is BSD-3-Clause (LICENSE.cdtapi). The source code these
-programs are built from is published beside this package, as
+GPL or non-free parts. The licences of the libraries linked in, CDTAPI (BSD-3-Clause),
+dtnmos (BSD-3-Clause), libcurl, civetweb and those they use, are in licenses/. The source
+code these programs are built from is published beside this package, as
 ffmpeg-dektec-$tag-source.tar.xz.
 
 Configuration:
