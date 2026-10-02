@@ -46,6 +46,10 @@
 #include "cdtapi_avfifo.h"
 
 #include "config.h"
+
+#if CONFIG_LIBCDTAPI_NMOS
+#include "dektec_nmos.h"
+#endif
 #if HAVE_INTRINSICS_SSE2
 #include <emmintrin.h> // SSE2 intrinsics
 #include <immintrin.h> // Other intrinsics
@@ -120,6 +124,15 @@ typedef struct DekTecDemuxContext {
     int (*read_header)(struct AVFormatContext *);
     int (*read_packet)(struct AVFormatContext *, AVPacket *pkt);
     int (*read_close)(struct AVFormatContext *);
+
+#if CONFIG_LIBCDTAPI_NMOS
+    char *nmos_registry;            // The NMOS registry, or "auto"; NULL or empty for none
+    char *nmos_label;               // The NMOS node's label; NULL for the default
+    char *nmos_host;                // The address the node's APIs are reached at
+    int nmos_port;                  // The port of the node's APIs; 0 for any free one
+    FFDektecNmos *nmos;             // The node, while the input is open
+    AvFifo_IpPars ippars[MAX_STREAMS]; // The stream of each FIFO, from its URL
+#endif
 } DekTecDemuxContext;
 
 static const char *rate_strings[12] = {
@@ -694,6 +707,10 @@ static int avfifo_init_rxfifo(AVFormatContext *s, AvFifo_RxFifo **fifo, char *ur
             return ret;
 
         AvFifo_RxFifo_SetIpPars(*fifo, &ippars);
+#if CONFIG_LIBCDTAPI_NMOS
+        // fifo points into context->fifos, at the stream's index.
+        context->ippars[fifo - context->fifos] = ippars;
+#endif
     } else {
         return AVERROR(EINVAL);
     }
@@ -1350,6 +1367,69 @@ static int avfifo_read_audio(AVFormatContext *s, AvFifo_RxFifo *fifo,
     return AVERROR(EAGAIN);
 }
 
+#if CONFIG_LIBCDTAPI_NMOS
+/**
+ * Open the NMOS node when nmos_registry is given, and register each stream as a
+ * receiver: "video", and "audio 0", "audio 1" and so on.
+ *
+ * @return 0, or a negative AVERROR after logging why
+ */
+static int nmos_open(AVFormatContext *s)
+{
+    DekTecDemuxContext *context = (DekTecDemuxContext *)s->priv_data;
+    FFDektecNmosOptions options = { context->nmos_registry, context->nmos_label,
+                                    context->nmos_host, context->nmos_port };
+    int audio = 0;
+    int ret;
+
+    if (!context->nmos_registry || !*context->nmos_registry)
+        return 0;
+    ret = ff_dektec_nmos_open(s, &options, context->device, context->serial_number,
+                              context->port, &context->nmos);
+    if (ret < 0)
+        return ret;
+    for (int i = 0; i < s->nb_streams; i++) {
+        const AVStream *st = s->streams[i];
+        St2110_RxFrameFormat format = st->codecpar->format == AV_PIX_FMT_UYVY422
+                                          ? St2110_RxFrameFormat_Uyvy422_8b
+                                          : St2110_RxFrameFormat_Uyvy422_10b;
+        char name[32];
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+            snprintf(name, sizeof(name), "video");
+        else
+            snprintf(name, sizeof(name), "audio %d", audio++);
+        ret = ff_dektec_nmos_add_receiver(context->nmos, context->fifos[i], format, st,
+                                          &context->ippars[i], name);
+        if (ret < 0) {
+            ff_dektec_nmos_close(&context->nmos);
+            return ret;
+        }
+    }
+    return 0;
+}
+
+/**
+ * Apply a controller's change, if one waits. A video receiver that changed starts its
+ * fields anew, and the statistics the FIFO started again are not reported as a change.
+ */
+static void nmos_poll(AVFormatContext *s)
+{
+    DekTecDemuxContext *context = (DekTecDemuxContext *)s->priv_data;
+    int idx = ff_dektec_nmos_poll(context->nmos);
+
+    if (idx < 0)
+        return;
+    if (s->streams[idx]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+        if (context->field0) {
+            AvFifo_RxFifo_ReturnToMemPool(context->fifos[idx], context->field0);
+            context->field0 = NULL;
+        }
+        context->last_field = -1;
+    }
+    context->statistics[idx] = AvFifo_RxFifo_GetStatistics(context->fifos[idx]);
+}
+#endif
+
 static int avfifo_read_header(AVFormatContext *s)
 {
     DekTecDemuxContext* context = (DekTecDemuxContext*)s->priv_data;
@@ -1401,6 +1481,11 @@ static int avfifo_read_header(AVFormatContext *s)
         stream_index++;
     }
 
+#if CONFIG_LIBCDTAPI_NMOS
+    ret = nmos_open(s);
+    if (ret < 0)
+        return ret;
+#endif
     return 1;
 }
 
@@ -1442,6 +1527,9 @@ static int avfifo_read_packet(AVFormatContext *s, AVPacket *pkt)
             context->start_tod.Nanoseconds;
     }
 
+#if CONFIG_LIBCDTAPI_NMOS
+    nmos_poll(s);
+#endif
     while (!fifo || !st || !par) {
         for (int i = 0; i < MAX_STREAMS; i++) {
             if (context->fifos[i]) {
@@ -1461,8 +1549,13 @@ static int avfifo_read_packet(AVFormatContext *s, AVPacket *pkt)
         if (interrupted(s))
             return AVERROR_EXIT;
         
-        if (!fifo || !st || !par)
+        if (!fifo || !st || !par) {
             av_usleep(5000);
+#if CONFIG_LIBCDTAPI_NMOS
+            // A disabled receiver delivers nothing; only a change can enable it again.
+            nmos_poll(s);
+#endif
+        }
     }
 
     if (!fifo || !st || !par) {
@@ -1500,6 +1593,10 @@ static int avfifo_read_close(AVFormatContext *s)
     DekTecDemuxContext *context = (DekTecDemuxContext *)s->priv_data;
     unsigned int result = 0;
 
+#if CONFIG_LIBCDTAPI_NMOS
+    // Closed before the FIFOs stop, so that no controller's request waits for them.
+    ff_dektec_nmos_close(&context->nmos);
+#endif
     for (int i = 0; i < s->nb_streams; i++) {
         result = AvFifo_RxFifo_Stop(context->fifos[i]);
         if (result != DTAPI_OK) {
@@ -1610,6 +1707,12 @@ static const AVOption options[] = {
     { "sample_rate", "Audio sample rate",        OFFSET(audio_format.sample_rate), AV_OPT_TYPE_INT, {.i64 = -1}, -1, 96000, AV_OPT_FLAG_DECODING_PARAM, NULL},
     { "bps",         "Audio bits per sample",    OFFSET(audio_format.bps),         AV_OPT_TYPE_INT, {.i64 = -1}, -1,    24, AV_OPT_FLAG_DECODING_PARAM, NULL},
     { "n_channels",  "Number of audio channels", OFFSET(audio_format.n_channels),  AV_OPT_TYPE_INT, {.i64 = -1}, -1,    64, AV_OPT_FLAG_DECODING_PARAM, NULL},
+#if CONFIG_LIBCDTAPI_NMOS
+    { "nmos_registry", "register the SMPTE 2110 streams with this NMOS registry, or auto to find one", OFFSET(nmos_registry), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AV_OPT_FLAG_DECODING_PARAM, NULL},
+    { "nmos_label", "the label of the NMOS node; ffmpeg-<serial>:<port> when not given", OFFSET(nmos_label), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AV_OPT_FLAG_DECODING_PARAM, NULL},
+    { "nmos_host", "the address at which controllers reach the NMOS node", OFFSET(nmos_host), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AV_OPT_FLAG_DECODING_PARAM, NULL},
+    { "nmos_port", "the port of the NMOS node's APIs, 0 for any free one", OFFSET(nmos_port), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 65535, AV_OPT_FLAG_DECODING_PARAM, NULL},
+#endif
 
     { NULL },
 };

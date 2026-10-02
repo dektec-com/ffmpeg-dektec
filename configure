@@ -224,6 +224,7 @@ External library support:
   --enable-libbs2b         enable bs2b DSP library [no]
   --enable-libcaca         enable textual display using libcaca [no]
   --enable-libcdtapi       enable DekTec SDI and SMPTE 2110 I/O via libcdtapi [no]
+  --enable-libcdtapi-nmos  register DekTec SMPTE 2110 streams with NMOS [no]
   --enable-libcdio         enable audio CD grabbing with libcdio [no]
   --enable-libcodec2       enable codec2 en/decoding using libcodec2 [no]
   --enable-libdav1d        enable AV1 decoding via libdav1d [no]
@@ -2083,6 +2084,7 @@ EXTERNAL_LIBRARY_LIST="
     libbs2b
     libcaca
     libcdtapi
+    libcdtapi_nmos
     libcodec2
     libdav1d
     libdc1394
@@ -4040,6 +4042,7 @@ decklink_outdev_deps="decklink threads"
 decklink_outdev_suggest="libklvanc"
 decklink_outdev_extralibs="-lstdc++"
 dektec_indev_deps="libcdtapi"
+libcdtapi_nmos_deps="libcdtapi threads"
 dektec_indev_select="sdi_demuxer udp_protocol"
 dektec_outdev_deps="libcdtapi swscale"
 dektec_outdev_select="sdi_muxer udp_protocol"
@@ -7340,6 +7343,7 @@ enabled libbluray         && require_pkg_config libbluray libbluray libbluray/bl
 enabled libbs2b           && require_pkg_config libbs2b libbs2b bs2b.h bs2b_open
 enabled libcaca           && require_pkg_config libcaca caca caca.h caca_create_canvas
 enabled libcdtapi         && require_pkg_config libcdtapi "cdtapi >= 6.14.7" cdtapi.h DtapiGetVersion
+enabled libcdtapi_nmos    && require_pkg_config libcdtapi_nmos "cdtapi >= 6.14.7 dtnmos >= 0.5.1" cdtapi_nmos.h DtNmosAvFifo_AddDevice
 enabled libcodec2         && require libcodec2 codec2/codec2.h codec2_create -lcodec2
 enabled libdav1d          && require_pkg_config libdav1d "dav1d >= 1.0.0" "dav1d/dav1d.h" dav1d_version
 enabled libdavs2          && require_pkg_config libdavs2 "davs2 >= 1.6.0" davs2.h davs2_decoder_open
