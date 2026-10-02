@@ -23,11 +23,19 @@
  * @file dektec_nmos.h
  * Makes the SMPTE ST 2110 streams of a DekTec port visible to an NMOS controller.
  *
- * An input of the dektec device that is given nmos_registry opens an NMOS node, with the
- * port as its device and each stream as a receiver. A controller connects and disconnects
- * the receivers over IS-05. The node calls back on a thread of its own, but only the
- * thread that reads the FIFOs may change them, so the change waits in a mailbox until
- * that thread calls ff_dektec_nmos_poll(). The steps:
+ * An input or output of the dektec device that is given nmos_registry opens an NMOS
+ * node, with the port as its device and each stream as a receiver of the input or a
+ * sender of the output. A controller connects, moves and disables them over IS-05. The
+ * node calls back on a thread of its own, but only the thread that reads or writes the
+ * FIFOs may change them, so the change waits in a mailbox until that thread calls
+ * ff_dektec_nmos_poll().
+ *
+ * An output: ff_dektec_nmos_open() at the end of write_header, when the FIFOs send;
+ * ff_dektec_nmos_add_sender() for each stream; ff_dektec_nmos_poll() before each packet,
+ * which ff_dektec_nmos_sending() then says whether to send or drop; and
+ * ff_dektec_nmos_close() in write_trailer, before the FIFOs stop.
+ *
+ * An input:
  *
  *   1. ff_dektec_nmos_open() in read_header, once the FIFOs are attached;
  *   2. ff_dektec_nmos_add_receiver() for each stream, with its address, or without one
@@ -99,6 +107,30 @@ int ff_dektec_nmos_add_receiver(FFDektecNmos *nmos, AvFifo_RxFifo *fifo,
                                 const char *name);
 
 /**
+ * Register a transmit FIFO as an NMOS sender of the port. Its label is the node's label
+ * followed by name, e.g. "video" or "audio 0". The node describes the flow from the FIFO,
+ * which must therefore be configured and have its address.
+ *
+ * @param nmos          the node
+ * @param fifo          the FIFO; it is changed only from ff_dektec_nmos_poll()
+ * @param stream_index  the index of the stream that feeds the FIFO
+ * @param name          the sender's name within the node
+ * @return 0, or a negative AVERROR after logging why
+ */
+int ff_dektec_nmos_add_sender(FFDektecNmos *nmos, AvFifo_TxFifo *fifo, int stream_index,
+                              const char *name);
+
+/**
+ * Return whether the sender of a stream sends, or a controller has disabled it, so that
+ * its packets are dropped.
+ *
+ * @param nmos          the node; NULL always sends
+ * @param stream_index  the stream
+ * @return 1 when it sends, 0 when it is disabled
+ */
+int ff_dektec_nmos_sending(FFDektecNmos *nmos, int stream_index);
+
+/**
  * Wait until a controller has connected every receiver registered without an address,
  * applying each connection as it comes, so that its FIFO knows what to receive.
  *
@@ -127,8 +159,8 @@ void ff_dektec_nmos_set_stream(FFDektecNmos *nmos, int index, St2110_RxFrameForm
 
 /**
  * Apply the change a controller asked for, if one waits. Call it from the thread that
- * reads the FIFOs, between two packets, and also while waiting for data, so that a
- * disabled receiver can be enabled again.
+ * reads or writes the FIFOs, between two packets; an input calls it also while waiting
+ * for data, so that a disabled receiver can be enabled again.
  *
  * @param nmos  the node; NULL does nothing
  * @return the stream index of the FIFO that was changed, or -1 when none was or the
@@ -138,7 +170,8 @@ int ff_dektec_nmos_poll(FFDektecNmos *nmos);
 
 /**
  * Remove the node's registrations, stop serving its APIs and free it. A controller's
- * request that waits for ff_dektec_nmos_poll() is answered with an error.
+ * request that waits for ff_dektec_nmos_poll() is answered with an error. Call it before
+ * the FIFOs stop.
  *
  * @param nmos  the node, set to NULL; NULL does nothing
  */

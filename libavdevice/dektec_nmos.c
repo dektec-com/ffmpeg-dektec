@@ -73,6 +73,15 @@ typedef struct Receiver {
     char name[64];                 ///< The receiver's name, for messages
 } Receiver;
 
+/* A sender: its FIFO, and whether a controller has it send. */
+typedef struct Sender {
+    FFDektecNmos *nmos;            ///< The node it belongs to
+    AvFifo_TxFifo *fifo;           ///< The FIFO a change is applied to
+    int stream_index;              ///< The index of the stream that feeds the FIFO
+    int sending;                   ///< 1 while it sends; 0 while a controller disables it
+    char name[64];                 ///< The sender's name, for messages
+} Sender;
+
 /* Where a request of the node's thread to read_packet's thread stands. */
 enum MailState {
     MAIL_EMPTY,    ///< No request
@@ -89,6 +98,8 @@ struct FFDektecNmos {
     char label[128];               ///< The node's label; receivers' labels start with it
     Receiver receivers[MAX_RECEIVERS];
     int nb_receivers;
+    Sender senders[MAX_RECEIVERS]; ///< Of an output, as many as an input has receivers
+    int nb_senders;
 
     /* The mailbox, guarded by lock: one request at a time, from the node's thread. */
     AVMutex lock;
@@ -96,8 +107,10 @@ struct FFDektecNmos {
     enum MailState state;
     int closing;                   ///< 1 once ff_dektec_nmos_close() has begun
     int abandoned;                 ///< 1 when the asker stopped waiting for a taken request
-    Receiver *receiver;            ///< The receiver the request is for
-    DtNmosAvFifoRxChange change;   ///< The change to apply
+    Receiver *receiver;            ///< The receiver the request is for, or NULL
+    DtNmosAvFifoRxChange change;   ///< The change to apply to it
+    Sender *sender;                ///< The sender the request is for, or NULL
+    DtNmosAvFifoTxChange tx_change; ///< The change to apply to it
     int made_open;                 ///< 1 when the change was made for an open stream
     unsigned int result;           ///< The result of applying it, DTAPI_OK or an error
     char message[256];             ///< Why it failed
@@ -125,16 +138,17 @@ static struct timespec deadline_after(int64_t timeout_us)
 }
 
 /**
- * Ask read_packet's thread to apply change to receiver r, and wait for its answer. Runs
- * on the node's thread. made_open says whether the change was made for the stream's
- * fixed format, or before the stream was open.
+ * Ask the thread that owns the FIFOs, read_packet's or write_packet's, to apply a
+ * change, and wait for its answer. Runs on the node's thread. The change is change for
+ * receiver r, made for the stream's fixed format when made_open is 1 and before the
+ * stream was open otherwise; or tx for sender snd.
  *
  * @return DTNMOS_OK, or an error that the node passes to the controller
  */
-static DtNmosResult ask_owner(Receiver *r, const DtNmosAvFifoRxChange *change,
-                              int made_open)
+static DtNmosResult ask_owner(FFDektecNmos *nmos, Receiver *r,
+                              const DtNmosAvFifoRxChange *change, int made_open,
+                              Sender *snd, const DtNmosAvFifoTxChange *tx)
 {
-    FFDektecNmos *nmos = r->nmos;
     struct timespec deadline = deadline_after(ANSWER_TIMEOUT_US);
     DtNmosResult ret = DTNMOS_OK;
     char message[sizeof(nmos->message)];
@@ -148,10 +162,14 @@ static DtNmosResult ask_owner(Receiver *r, const DtNmosAvFifoRxChange *change,
     }
     if (nmos->closing) {
         ff_mutex_unlock(&nmos->lock);
-        return DtNmos_SetLastError(DTNMOS_E_STATE, "The input is closing");
+        return DtNmos_SetLastError(DTNMOS_E_STATE, "FFmpeg is closing the device");
     }
     nmos->receiver = r;
-    nmos->change = *change;
+    nmos->sender = snd;
+    if (r)
+        nmos->change = *change;
+    else
+        nmos->tx_change = *tx;
     nmos->made_open = made_open;
     nmos->state = MAIL_POSTED;
     ff_cond_broadcast(&nmos->changed);
@@ -169,14 +187,14 @@ static DtNmosResult ask_owner(Receiver *r, const DtNmosAvFifoRxChange *change,
     } else if (nmos->state == MAIL_POSTED) {
         /* Not taken in time: withdraw it, so that it is never applied. */
         nmos->state = MAIL_EMPTY;
-        av_strlcpy(message, nmos->closing ? "The input is closing"
-                                          : "The input did not take the change in time",
+        av_strlcpy(message, nmos->closing ? "FFmpeg is closing the device"
+                                          : "FFmpeg did not take the change in time",
                    sizeof(message));
         ret = DTNMOS_E_TIMEOUT;
     } else {
         /* Taken but not answered: it is being applied, and poll empties the mailbox. */
         nmos->abandoned = 1;
-        av_strlcpy(message, "The input did not apply the change in time", sizeof(message));
+        av_strlcpy(message, "FFmpeg did not apply the change in time", sizeof(message));
         ret = DTNMOS_E_TIMEOUT;
     }
     ff_cond_broadcast(&nmos->changed);
@@ -266,7 +284,24 @@ static DtNmosResult activate_receiver(void *user, const DtNmosId *id,
             activation, now.configured ? now.format : St2110_RxFrameFormat_Raw, &change) !=
         DTAPI_OK)
         return DtNmos_SetLastError(DTNMOS_E_INVALID_ARGUMENT, GetLastException());
-    return ask_owner(r, &change, now.configured);
+    return ask_owner(r->nmos, r, &change, now.configured, NULL, NULL);
+}
+
+/**
+ * The senders' callback, which the node calls on a thread of its own when a controller
+ * enables, disables or moves a sender. Asks write_packet's thread to apply the change.
+ */
+static DtNmosResult activate_sender(void *user, const DtNmosId *id,
+                                    const DtNmosSenderActivation *activation)
+{
+    Sender *snd = user;
+    DtNmosAvFifoTxChange change;
+
+    (void)id;
+    memset(&change, 0, sizeof(change));
+    if (DtNmosAvFifo_TxChangeFromActivation(activation, &change) != DTAPI_OK)
+        return DtNmos_SetLastError(DTNMOS_E_INVALID_ARGUMENT, GetLastException());
+    return ask_owner(snd->nmos, NULL, NULL, 1, snd, &change);
 }
 
 /**
@@ -413,6 +448,53 @@ int ff_dektec_nmos_add_receiver(FFDektecNmos *nmos, AvFifo_RxFifo *fifo,
     return 0;
 }
 
+int ff_dektec_nmos_add_sender(FFDektecNmos *nmos, AvFifo_TxFifo *fifo, int stream_index,
+                              const char *name)
+{
+    Sender *snd;
+    DtNmosSenderConfig config;
+    DtNmosId id;
+    char label[200];
+
+    if (nmos->nb_senders >= MAX_RECEIVERS)
+        return AVERROR(EINVAL);
+    snd = &nmos->senders[nmos->nb_senders];
+    memset(snd, 0, sizeof(*snd));
+    snd->nmos = nmos;
+    snd->fifo = fifo;
+    snd->stream_index = stream_index;
+    snd->sending = 1;
+    av_strlcpy(snd->name, name, sizeof(snd->name));
+
+    /* The bridge describes the flow from the FIFO, as it is configured to send. */
+    memset(&config, 0, sizeof(config));
+    config.Size = sizeof(config);
+    config.DeviceId = nmos->device_id;
+    snprintf(label, sizeof(label), "%s %s", nmos->label, name);
+    config.Label = label;
+    if (DtNmosAvFifo_AddSender(nmos->node, fifo, &config, activate_sender, snd, &id) !=
+        DTAPI_OK)
+        return failed(nmos->log_ctx, "Adding a sender", GetLastException());
+    nmos->nb_senders++;
+    av_log(nmos->log_ctx, AV_LOG_INFO, "NMOS: sender %s, \"%s\"\n", id.Text, label);
+    return 0;
+}
+
+int ff_dektec_nmos_sending(FFDektecNmos *nmos, int stream_index)
+{
+    int sending = 1;
+
+    if (!nmos)
+        return 1;
+    ff_mutex_lock(&nmos->lock);
+    for (int i = 0; i < nmos->nb_senders; i++) {
+        if (nmos->senders[i].stream_index == stream_index)
+            sending = nmos->senders[i].sending;
+    }
+    ff_mutex_unlock(&nmos->lock);
+    return sending;
+}
+
 void ff_dektec_nmos_set_stream(FFDektecNmos *nmos, int index, St2110_RxFrameFormat format,
                                const AVStream *st)
 {
@@ -476,6 +558,39 @@ int ff_dektec_nmos_wait(FFDektecNmos *nmos, int64_t timeout_us,
     }
 }
 
+/**
+ * Apply the change for a sender that waits in the mailbox, which ff_dektec_nmos_poll()
+ * has taken, and answer it. A sender that a controller disabled, or whose FIFO did not
+ * start again, sends nothing until a later change.
+ *
+ * @return the stream index of the sender's FIFO
+ */
+static int apply_sender_change(FFDektecNmos *nmos, Sender *snd,
+                               const DtNmosAvFifoTxChange *change)
+{
+    unsigned int result = DtNmosAvFifo_ApplyTxChange(snd->fifo, change);
+    const char *why = result == DTAPI_OK ? "" : GetLastException();
+
+    ff_mutex_lock(&nmos->lock);
+    snd->sending = result == DTAPI_OK && change->MasterEnable;
+    nmos->result = result;
+    av_strlcpy(nmos->message, why, sizeof(nmos->message));
+    nmos->state = nmos->abandoned ? MAIL_EMPTY : MAIL_ANSWERED;
+    nmos->abandoned = 0;
+    ff_cond_broadcast(&nmos->changed);
+    ff_mutex_unlock(&nmos->lock);
+
+    if (result != DTAPI_OK)
+        av_log(nmos->log_ctx, AV_LOG_ERROR, "NMOS: sender %s: the change failed: %s\n",
+               snd->name, why);
+    else if (change->MasterEnable)
+        av_log(nmos->log_ctx, AV_LOG_INFO, "NMOS: sender %s sends to port %d\n",
+               snd->name, change->DestinationPort);
+    else
+        av_log(nmos->log_ctx, AV_LOG_INFO, "NMOS: sender %s disabled\n", snd->name);
+    return snd->stream_index;
+}
+
 int ff_dektec_nmos_poll(FFDektecNmos *nmos)
 {
     Receiver *r;
@@ -490,6 +605,13 @@ int ff_dektec_nmos_poll(FFDektecNmos *nmos)
     if (nmos->state != MAIL_POSTED) {
         ff_mutex_unlock(&nmos->lock);
         return -1;
+    }
+    if (nmos->sender) {
+        Sender *snd = nmos->sender;
+        DtNmosAvFifoTxChange tx = nmos->tx_change;
+        nmos->state = MAIL_TAKEN;
+        ff_mutex_unlock(&nmos->lock);
+        return apply_sender_change(nmos, snd, &tx);
     }
     r = nmos->receiver;
     change = nmos->change;
@@ -538,7 +660,7 @@ void ff_dektec_nmos_close(FFDektecNmos **pnmos)
 
     if (!nmos)
         return;
-    /* A callback that waits for read_packet gives up at once, so that closing the node,
+    /* A callback that waits for the FIFOs' thread gives up at once, so that closing the node,
      * which waits for its callbacks, does not wait for the time-out. */
     ff_mutex_lock(&nmos->lock);
     nmos->closing = 1;

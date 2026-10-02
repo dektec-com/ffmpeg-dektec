@@ -44,6 +44,10 @@
 #include "cdtapi_avfifo.h"
 
 #include "config.h"
+
+#if CONFIG_LIBCDTAPI_NMOS
+#include "dektec_nmos.h"
+#endif
 #if HAVE_INTRINSICS_SSE2
 #include <emmintrin.h> // SSE2 intrinsics
 #include <immintrin.h> // Other intrinsics
@@ -100,6 +104,14 @@ typedef struct DekTecMuxContext {
     int (*write_header)(struct AVFormatContext *);
     int (*write_packet)(struct AVFormatContext *, AVPacket *pkt);
     int (*write_trailer)(struct AVFormatContext *);
+
+#if CONFIG_LIBCDTAPI_NMOS
+    char *nmos_registry;            // The NMOS registry, or "auto"; NULL or empty for none
+    char *nmos_label;               // The NMOS node's label; NULL for the default
+    char *nmos_host;                // The address the node's APIs are reached at
+    int nmos_port;                  // The port of the node's APIs; 0 for any free one
+    FFDektecNmos *nmos;             // The node, while the output is open
+#endif
 } DekTecMuxContext;
 
 #define OFFSET(x) (int)offsetof(DekTecMuxContext, x)
@@ -142,6 +154,12 @@ static const AVOption options[] = {
     { "url:a:5", "Destination IP or hostname and port", OFFSET(url_a[5]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
     { "url:a:6", "Destination IP or hostname and port", OFFSET(url_a[6]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
     { "url:a:7", "Destination IP or hostname and port", OFFSET(url_a[7]), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, AUDIO_ENC_FLAGS, NULL},
+#if CONFIG_LIBCDTAPI_NMOS
+    { "nmos_registry", "register the SMPTE 2110 streams with this NMOS registry, or auto to find one", OFFSET(nmos_registry), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, ENC_FLAGS, NULL},
+    { "nmos_label", "the label of the NMOS node; ffmpeg-<serial>:<port> when not given", OFFSET(nmos_label), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, ENC_FLAGS, NULL},
+    { "nmos_host", "the address at which controllers reach the NMOS node", OFFSET(nmos_host), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, ENC_FLAGS, NULL},
+    { "nmos_port", "the port of the NMOS node's APIs, 0 for any free one", OFFSET(nmos_port), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 65535, ENC_FLAGS, NULL},
+#endif
 
     { NULL },
 };
@@ -1113,6 +1131,41 @@ static int avfifo_write_audio(AVFormatContext *s, AvFifo_TxFifo *fifo, AVPacket 
     return 1;
 }
 
+#if CONFIG_LIBCDTAPI_NMOS
+/**
+ * Open the NMOS node when nmos_registry is given, and register each stream's FIFO as a
+ * sender: "video", and "audio 0", "audio 1" and so on.
+ *
+ * @return 0, or a negative AVERROR after logging why
+ */
+static int nmos_open(AVFormatContext *s)
+{
+    DekTecMuxContext *context = (DekTecMuxContext *)s->priv_data;
+    FFDektecNmosOptions options = { context->nmos_registry, context->nmos_label,
+                                    context->nmos_host, context->nmos_port };
+    int audio = 0;
+    int ret;
+
+    if (!context->nmos_registry || !*context->nmos_registry)
+        return 0;
+    ret = ff_dektec_nmos_open(s, &options, context->device, context->serial_number,
+                              context->port, &context->nmos);
+    for (int i = 0; i < s->nb_streams && ret >= 0; i++) {
+        char name[32];
+        if (!context->fifos[i])
+            continue;
+        if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+            snprintf(name, sizeof(name), "video");
+        else
+            snprintf(name, sizeof(name), "audio %d", audio++);
+        ret = ff_dektec_nmos_add_sender(context->nmos, context->fifos[i], i, name);
+    }
+    if (ret < 0)
+        ff_dektec_nmos_close(&context->nmos);
+    return ret;
+}
+#endif
+
 static int avfifo_write_header(AVFormatContext *s)
 {
     DekTecMuxContext* context = (DekTecMuxContext*)s->priv_data;
@@ -1177,6 +1230,11 @@ static int avfifo_write_header(AVFormatContext *s)
         }
     }
 
+#if CONFIG_LIBCDTAPI_NMOS
+    ret = nmos_open(s);
+    if (ret < 0)
+        return ret;
+#endif
     return 1;
 }
 
@@ -1191,6 +1249,13 @@ static int avfifo_write_packet(AVFormatContext *s, AVPacket *pkt)
     if (!fifo) {
         return 1;
     }
+
+#if CONFIG_LIBCDTAPI_NMOS
+    // A sender that a controller disabled drops its packets until it is enabled again.
+    ff_dektec_nmos_poll(context->nmos);
+    if (!ff_dektec_nmos_sending(context->nmos, pkt->stream_index))
+        return 0;
+#endif
 
     if (context->start_tod.Seconds == 0 &&
         context->start_tod.Nanoseconds == 0) {
@@ -1254,6 +1319,11 @@ static int avfifo_write_trailer(AVFormatContext *s)
 {
     DekTecMuxContext *context = (DekTecMuxContext *)s->priv_data;
     unsigned int result = 0;
+
+#if CONFIG_LIBCDTAPI_NMOS
+    // Closed before the FIFOs stop, so that no controller's request waits for them.
+    ff_dektec_nmos_close(&context->nmos);
+#endif
 
     for (int i = 0; i < s->nb_streams; i++) {
         result = AvFifo_TxFifo_Stop(context->fifos[i]);
