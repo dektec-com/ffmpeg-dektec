@@ -79,9 +79,24 @@ jobs:
           install: make diffutils pkgconf nasm
           path-type: inherit
 
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+      # MSVC's x64 environment for the steps that follow: the variables vcvars64.bat
+      # changes, PATH, INCLUDE and LIB among them, go into GITHUB_ENV.
+      - name: MSVC environment
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+          $vcvars = "$vs\VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "No vcvars64.bat in '$vs'" }
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+              if ($_ -match '^([^=]+)=(.*)$') {
+                  $name, $value = $Matches[1], $Matches[2]
+                  if ([Environment]::GetEnvironmentVariable($name) -ne $value) {
+                      "$name=$value" >> $env:GITHUB_ENV
+                  }
+              }
+          }
 
       - name: Build CDTAPI with its NMOS bridge, and SDL2, static with the static C runtime
         shell: pwsh
