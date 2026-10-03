@@ -30,6 +30,11 @@
  * FIFOs may change them, so the change waits in a mailbox until that thread calls
  * ff_dektec_nmos_poll().
  *
+ * The node's clock is that of the port's PTP clock slave, which DtapiService runs: its
+ * grandmaster, or internal without one. ff_dektec_nmos_poll() asks for it again once a
+ * second, and the node registers again when it changed. A sender's SDP names the
+ * grandmaster too, while the slave is locked to it.
+ *
  * An output: ff_dektec_nmos_open() at the end of write_header, when the FIFOs send;
  * ff_dektec_nmos_add_sender() for each stream; ff_dektec_nmos_poll() before each packet,
  * which ff_dektec_nmos_sending() then says whether to send or drop; and

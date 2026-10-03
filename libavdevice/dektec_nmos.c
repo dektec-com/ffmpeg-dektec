@@ -95,6 +95,9 @@ struct FFDektecNmos {
     DtNmosNode *node;              ///< The node
     DtNmosRegistrySearch *search;  ///< The search for registries, with "auto"; or NULL
     DtNmosId device_id;            ///< The port's NMOS device
+    DtDevice *device;              ///< The card, for the clock of its port
+    int port;                      ///< The port, counting from 1
+    int64_t clock_due;             ///< When to ask for the port's clock again
     char label[128];               ///< The node's label; receivers' labels start with it
     Receiver receivers[MAX_RECEIVERS];
     int nb_receivers;
@@ -322,11 +325,26 @@ static int failed(void *log_ctx, const char *what, const char *why)
     return AVERROR_EXTERNAL;
 }
 
+/* The node's clock follows the PTP clock slave of the port, which DtapiService runs; it
+ * is asked once a second, and the node registers again only when the clock changed. */
+static void update_clock(FFDektecNmos *nmos)
+{
+    DtNmosClock clock;
+    int64_t now = av_gettime_relative();
+
+    if (now < nmos->clock_due)
+        return;
+    nmos->clock_due = now + 1000000;
+    DtNmosAvFifo_ClockFromPort(nmos->device, nmos->port, &clock);
+    DtNmosNode_SetClock(nmos->node, &clock);
+}
+
 int ff_dektec_nmos_open(void *log_ctx, const FFDektecNmosOptions *options,
                         DtDevice *device, int64_t serial, int port, FFDektecNmos **out)
 {
     FFDektecNmos *nmos;
     DtNmosNodeConfig config;
+    DtNmosClock clock;
     char name[160];
     int automatic = !strcmp(options->registry, "auto");
     int ret;
@@ -374,6 +392,13 @@ int ff_dektec_nmos_open(void *log_ctx, const FFDektecNmosOptions *options,
     config.Http = DtNmos_CurlHttp;
     config.Log = log_message;
     config.LogUser = nmos;
+    /* The port's PTP grandmaster, or an internal clock without one or without
+     * DtapiService. */
+    DtNmosAvFifo_ClockFromPort(device, port, &clock);
+    config.Clock = &clock;
+    nmos->device = device;
+    nmos->port = port;
+    nmos->clock_due = av_gettime_relative() + 1000000;
     nmos->node = DtNmosNode_Alloc();
     if (!nmos->node || DtNmosNode_Open(nmos->node, &config) != DTNMOS_OK ||
         DtNmosNode_Serve(nmos->node) != DTNMOS_OK) {
@@ -392,6 +417,11 @@ int ff_dektec_nmos_open(void *log_ctx, const FFDektecNmosOptions *options,
             av_strlcpy(url, "?", sizeof(url));
         av_log(log_ctx, AV_LOG_INFO, "NMOS: node %s, \"%s\", at %s, registry %s\n",
                config.Id.Text, nmos->label, url, options->registry);
+        if (clock.Kind == DTNMOS_CLOCK_PTP)
+            av_log(log_ctx, AV_LOG_INFO, "NMOS: clock PTP %s%s\n", clock.Grandmaster,
+                   clock.Locked ? ", locked" : "");
+        else
+            av_log(log_ctx, AV_LOG_INFO, "NMOS: clock internal\n");
     }
     *out = nmos;
     return 0;
@@ -601,6 +631,7 @@ int ff_dektec_nmos_poll(FFDektecNmos *nmos)
 
     if (!nmos)
         return -1;
+    update_clock(nmos);
     ff_mutex_lock(&nmos->lock);
     if (nmos->state != MAIL_POSTED) {
         ff_mutex_unlock(&nmos->lock);
