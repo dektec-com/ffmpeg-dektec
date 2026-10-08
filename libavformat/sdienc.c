@@ -27,64 +27,47 @@
  * @author Jeroen Steendam
  */
 
-/*
- * Terminology used in specification:
- */
-
 #include "avformat.h"
+#include "internal.h"
 #include "libavcodec/codec_id.h"
 #include "mux.h"
 #include "libavcodec/put_bits.h"
-#include "libavutil/fifo.h"
+#include "libavutil/intreadwrite.h"
 #include "libavutil/internal.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
-#include "libavutil/x86/cpu.h"
+#include "libavutil/pixdesc.h"
 #include "libswscale/swscale.h"
-#include "libswscale/swscale_internal.h"
 #include "sdicommon.h"
-#include "sdienc_audio.h"
-#include "sdienc_payloadid.h"
+
+#include "cdtapi_sdi.h"
 
 #include <inttypes.h>
 
-#include "config.h"
-#if HAVE_INTRINSICS_SSE2
-#include <emmintrin.h> // SSE2 intrinsics
-#include <immintrin.h> // Other intrinsics
-#if defined(__GNUC__)
-#pragma GCC target("ssse3")
-#endif
-#endif
-
 #define MAX_STREAMS 8
+
+/* The audio channels a frame can carry: four groups of four. */
+#define AUDIO_MAX_CHANNELS 16
 
 typedef struct SdiMuxContext {
     const AVClass *av_class;
 
-    uint32_t option_payload_id;     ///< option payload identifier
-    uint32_t option_audio_nr_ch;    ///< option number of audio channels
+    uint32_t option_payload_id;     ///< option payload identifier, not used
+    int option_audio_nr_ch;         ///< option number of audio channels
     char* option_standard;          ///< option sdi standard
-    int option_interleave_type;     ///< option interleave type
+    int option_interleave_type;     ///< option interleave type, not used
     int option_calc_crc;            ///< option to enable/disable CRC insertion
     int option_no_header;           ///< option to disable file header
+    int threads;                    ///< option threads, FF_SDI_THREADS_AUTO, 1 or more
 
     int frame_padding;              ///< nr. of padding bytes after a frame
-    int src_width;                  ///< width of encapsulated picture
-    int src_height;                 ///< height of encapsulated picture
     const struct SdiInfo *sdi_info; ///< constants for the standard used
+    int vidstd;                     ///< the standard's DTAPI_VIDSTD_ code
     AVRational rrate;
-    int is_sd;                      ///< true for 525/625 line standards
-    int has_sub_images;             ///< true for 2160 line standards
-    int is_interlaced_transport;    ///< true for interlaced transport
-    uint32_t crc[8];                ///< running crc
-    uint32_t out_word[2];           ///< running output word
-    int bitpos;
-    uint16_t *line_buf;
     uint8_t *frame_buf;             ///< a whole frame, packed to 10-bit symbols
-    uint8_t *frame_ptr;             ///< where the next line goes in frame_buf
     int frame_size;                 ///< size of a frame, padding included
-    uint16_t *blank;
+    DtSdiView *view;                ///< the view of frame_buf the builder writes
+    DtSdiBuilder *builder;          ///< puts each frame together
     int num_frames;
     int64_t next_pts;
     AVRational time_base;
@@ -94,196 +77,15 @@ typedef struct SdiMuxContext {
     struct SwsContext *scale_context; ///< swscale context
     AVFrame *scale_frame;             ///< scale frame
 
-    SdiAudio *audio;          ///< audio related
-
-    void (*from_planar)(const uint16_t *py, const uint16_t *pu,
-                        const uint16_t *pv, uint16_t *sdi, int width);
+    AVStream *audio_stream;   ///< the audio stream, or NULL
+    int audio_nr_ch;          ///< channels the frames carry
+    int stream_nr_ch;         ///< channels of the audio stream
+    int bytes_per_sample;     ///< of the audio stream: 3 or 4
+    int max_samples;          ///< most samples per channel a frame carries
+    uint8_t *audio_in;        ///< a frame's samples, as the audio stream has them
+    int32_t *audio_buf;       ///< the same, 24 bits at the top of 32, interleaved
+    int64_t audio_pts;        ///< pts of the next frame's first sample
 } SdiMuxContext;
-
-#if HAVE_INTRINSICS_SSE2
-static int is_sse_aligned(const uint16_t *ptr)
-{
-    return (((intptr_t)ptr) % 16) == 0;
-}
-#endif
-
-static void write_blanking(uint16_t* ptr, int length, uint16_t blanking_symbol)
-{
-    uint16_t *ptr_end = ptr + length;
-#if HAVE_INTRINSICS_SSE2
-    __m128i blanking;
-    while (!is_sse_aligned(ptr) && ptr < ptr_end)
-        *ptr++ = blanking_symbol;
-    blanking = _mm_set1_epi16(blanking_symbol);
-    while (ptr+7 < ptr_end) {
-        _mm_store_si128((__m128i*)ptr, blanking);
-        ptr += 8;
-    }
-#endif
-    while (ptr < ptr_end)
-        *ptr++ = blanking_symbol;
-}
-
-static uint16_t get_sav_eav_word(int IsVanc, int IsField2, int IsEav)
-{
-    uint16_t  Pattern = 0x200 | (IsField2 ? 0x100 : 0) | (IsVanc ? 0x80 : 0) | (IsEav ? 0x40 : 0);
-    Pattern |= (IsVanc ^ IsEav) ? 0x20 : 0; // p3
-    Pattern |= (IsField2 ^ IsEav) ? 0x10 : 0; // p2
-    Pattern |= (IsField2 ^ IsVanc) ? 0x8 : 0; // p1
-    Pattern |= (IsField2 ^ IsVanc ^ IsEav) ? 0x4 : 0; // p0
-    return Pattern;
-}
-
-/*
- * Two sample interleave: a sub-image takes two adjacent pixels and the next two go to the
- * other sub-image of the row, so of four picture columns sub-image 1 takes columns 0 and
- * 1 of the even row and sub-image 2 columns 2 and 3, while the odd row goes to sub-images
- * 3 and 4 the same way. Each sub-image then keeps the 4:2:2 chroma pair of the two luma
- * samples it belongs to, which is what makes the split possible without resampling.
- */
-static void from_planar_2si(const uint16_t *py, const uint16_t *pu,
-                            const uint16_t *pv, uint16_t *sdi, int width)
-{
-    const uint16_t *py2 = py + width;
-    const uint16_t *pu2 = pu + (width >> 1);
-    const uint16_t *pv2 = pv + (width >> 1);
-    while (width > 0) {
-        width -= 4;
-        *sdi++ = pu2[1];
-        *sdi++ = pu[1];
-        *sdi++ = pu2[0];
-        *sdi++ = pu[0];
-        *sdi++ = py2[2];
-        *sdi++ = py[2];
-        *sdi++ = py2[0];
-        *sdi++ = py[0];
-        *sdi++ = pv2[1];
-        *sdi++ = pv[1];
-        *sdi++ = pv2[0];
-        *sdi++ = pv[0];
-        *sdi++ = py2[3];
-        *sdi++ = py[3];
-        *sdi++ = py2[1];
-        *sdi++ = py[1];
-        pu += 2;
-        pu2 += 2;
-        pv += 2;
-        pv2 += 2;
-        py += 4;
-        py2 += 4;
-    }
-}
-
-#if HAVE_INTRINSICS_SSE2
-/*
- * Two sample interleave, eight pixels of the two picture lines per step, which is the
- * thirty-two symbols of two groups of the layout from_planar_2si writes. A pair of
- * lines gives each chrominance vector the two lines' samples word by word and each
- * luminance vector four of their pixels, and a shuffle of the dwords puts the pairs in
- * the order the groups take them: chrominance the later pair first, luminance the even
- * pixels and then the odd ones.
- */
-static void from_planar_2si_sse(const uint16_t *py, const uint16_t *pu,
-                                const uint16_t *pv, uint16_t *sdi, int width)
-{
-    const uint16_t *py2 = py + width;
-    const uint16_t *pu2 = pu + (width >> 1);
-    const uint16_t *pv2 = pv + (width >> 1);
-
-    while (width >= 8) {
-        __m128i y2_symbols = _mm_loadu_si128((const __m128i*)py2); // 8 symbols
-        __m128i y_symbols = _mm_loadu_si128((const __m128i*)py);   // 8 symbols
-        __m128i u_pairs = _mm_unpacklo_epi16(_mm_loadl_epi64((const __m128i*)pu2),
-                                             _mm_loadl_epi64((const __m128i*)pu));
-        __m128i v_pairs = _mm_unpacklo_epi16(_mm_loadl_epi64((const __m128i*)pv2),
-                                             _mm_loadl_epi64((const __m128i*)pv));
-        __m128i u = _mm_shuffle_epi32(u_pairs, _MM_SHUFFLE(2, 3, 0, 1));
-        __m128i v = _mm_shuffle_epi32(v_pairs, _MM_SHUFFLE(2, 3, 0, 1));
-        __m128i y_lo = _mm_shuffle_epi32(_mm_unpacklo_epi16(y2_symbols, y_symbols),
-                                         _MM_SHUFFLE(1, 3, 0, 2));
-        __m128i y_hi = _mm_shuffle_epi32(_mm_unpackhi_epi16(y2_symbols, y_symbols),
-                                         _MM_SHUFFLE(1, 3, 0, 2));
-
-        _mm_storeu_si128((__m128i*)(sdi + 0), _mm_unpacklo_epi64(u, y_lo));
-        _mm_storeu_si128((__m128i*)(sdi + 8),
-                         _mm_unpacklo_epi64(v, _mm_srli_si128(y_lo, 8)));
-        _mm_storeu_si128((__m128i*)(sdi + 16),
-                         _mm_unpacklo_epi64(_mm_srli_si128(u, 8), y_hi));
-        _mm_storeu_si128((__m128i*)(sdi + 24), _mm_unpackhi_epi64(v, y_hi));
-
-        sdi += 32;
-        pu += 4;
-        pu2 += 4;
-        pv += 4;
-        pv2 += 4;
-        py += 8;
-        py2 += 8;
-        width -= 8;
-    }
-    while (width > 0) {
-        width -= 4;
-        *sdi++ = pu2[1];
-        *sdi++ = pu[1];
-        *sdi++ = pu2[0];
-        *sdi++ = pu[0];
-        *sdi++ = py2[2];
-        *sdi++ = py[2];
-        *sdi++ = py2[0];
-        *sdi++ = py[0];
-        *sdi++ = pv2[1];
-        *sdi++ = pv[1];
-        *sdi++ = pv2[0];
-        *sdi++ = pv[0];
-        *sdi++ = py2[3];
-        *sdi++ = py[3];
-        *sdi++ = py2[1];
-        *sdi++ = py[1];
-        pu += 2;
-        pu2 += 2;
-        pv += 2;
-        pv2 += 2;
-        py += 4;
-        py2 += 4;
-    }
-}
-
-static void from_planar_sse(const uint16_t *py, const uint16_t *pu,
-                            const uint16_t *pv, uint16_t *sdi, int width)
-{
-    while (width >= 8) {
-        __m128i y_symbols = _mm_loadu_si128((__m128i*)py); // 8 symbols
-        __m128i u_symbols = _mm_loadl_epi64((__m128i*)pu); // 4 symbols
-        __m128i v_symbols = _mm_loadl_epi64((__m128i*)pv); // 4 symbols
-
-        __m128i uv_symbols = _mm_unpacklo_epi16(u_symbols, v_symbols); // Interleave U and V
-
-        _mm_storeu_si128((__m128i*)sdi, _mm_unpacklo_epi16(uv_symbols, y_symbols)); // Interleave low part of UV and Y
-        sdi += 8;
-        _mm_storeu_si128((__m128i*)sdi, _mm_unpackhi_epi16(uv_symbols, y_symbols)); // Interleave low part of UV and Y
-        sdi += 8;
-        
-        py += 8;
-        pu += 4;
-        pv += 4;
-        width -= 8;
-    }
-}
-#endif
-
-/*
- * Copy planar pixels to SDI line. Width is the picture width in pixels.
- */
-static void from_planar(const uint16_t *py, const uint16_t *pu,
-                        const uint16_t *pv, uint16_t *sdi, int width)
-{
-    while (width > 0) {
-        width -= 2;
-        *sdi++ = *pu++;
-        *sdi++ = *py++;
-        *sdi++ = *pv++;
-        *sdi++ = *py++;
-    }
-}
 
 static int put_sdi_format(struct PutBitContext *pb, struct Format *format)
 {
@@ -483,16 +285,6 @@ static void write_sdi_header(struct AVFormatContext *s, SdiMuxContext *sdi)
 static void prepare_buffers(AVFormatContext *s)
 {
     SdiMuxContext *sdi = s->priv_data;
-    int line_len = sdi->sdi_info->nr_hanc_symbols + sdi->sdi_info->nr_vanc_symbols;
-    int nr_ch = ff_sdi_get_nr_channels(sdi->sdi_info->payload_format);
-    int i, N;
-
-    sdi->line_buf = av_malloc(line_len * sizeof(uint16_t));
-    sdi->blank = av_malloc(line_len * sizeof(uint16_t));
-    // A whole frame, packed to ten bits and padded, with room for the wide store the
-    // last step of the packing loop makes past the bytes it wants.
-    sdi->frame_size = sdi->sdi_info->nr_sdi_lines * line_len * 10 / 8 + sdi->frame_padding;
-    sdi->frame_buf = av_malloc(sdi->frame_size + 16);
 
     for (int i = 0; i < FFMIN(s->nb_streams, MAX_STREAMS); ++i) {
         sdi->buffer[i] = ff_sdi_buffer_alloc(s->streams[i]);
@@ -501,11 +293,6 @@ static void prepare_buffers(AVFormatContext *s)
         else if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
             sdi->buffer[i]->max_buffer = 3*800;
     }
-
-    // Prepare buffer with blanking for this nr. of channels
-    N = FFMAX(2, nr_ch);
-    for (i = 0; i < line_len; i++)
-        sdi->blank[i] = (i & (N - 1)) < (N / 2) ? 0x200 : 0x40;
 }
 
 static int init_scaling(AVFormatContext *s, SdiMuxContext *sdi, AVStream *stream)
@@ -538,6 +325,99 @@ static int init_scaling(AVFormatContext *s, SdiMuxContext *sdi, AVStream *stream
                         src_width, src_height, av_get_pix_fmt_name(src_format),
                         dst_width, dst_height, av_get_pix_fmt_name(dst_format));
     }
+    return 0;
+}
+
+/*
+ * Set up CDTAPI's builder for the standard, which puts the frames together, and the
+ * buffer it builds them in.
+ */
+static int init_builder(AVFormatContext *s, SdiMuxContext *sdi)
+{
+    DtWorkerPool *pool = NULL;
+    int num_threads = 0;
+    size_t raw_size = 0;
+    DtapiResult result;
+    int ret;
+
+    sdi->vidstd = av_sdi_vidstd(sdi->sdi_info);
+    result = DtSdiView_RawFrameSize(sdi->vidstd, 10, &raw_size);
+    if (result != DTAPI_OK) {
+        av_log(s, AV_LOG_ERROR, "CDTAPI does not build frames of %s: %s\n",
+               sdi->sdi_info->name, DtapiResult2Str(result));
+        return AVERROR(EINVAL);
+    }
+    sdi->frame_size = raw_size;
+
+    // The padding after the frame stays zero: the builder writes the frame only
+    sdi->frame_buf = av_mallocz(sdi->frame_size);
+    sdi->view = DtSdiView_Alloc();
+    sdi->builder = DtSdiBuilder_Alloc();
+    if (!sdi->frame_buf || !sdi->view || !sdi->builder)
+        return AVERROR(ENOMEM);
+
+    result = DtSdiBuilder_SetChecksums(sdi->builder, sdi->option_calc_crc != 0);
+    if (result != DTAPI_OK)
+        return AVERROR(EINVAL);
+
+    ret = ff_sdi_worker_pool(s, sdi->threads, &pool, &num_threads);
+    if (ret < 0)
+        return ret;
+    if (pool) {
+        result = DtSdiBuilder_SetWorkerPool(sdi->builder, pool, num_threads);
+        DtWorkerPool_Freep(&pool);
+        if (result != DTAPI_OK) {
+            av_log(s, AV_LOG_ERROR, "Could not give the builder its threads: %s\n",
+                   DtapiResult2Str(result));
+            return AVERROR(ENOMEM);
+        }
+    }
+    return 0;
+}
+
+/*
+ * Set up the audio the frames carry: the channels of the audio stream, or as many as
+ * the sdi_nr_audio option asks for, the ones the stream lacks silent.
+ */
+static int init_audio(AVFormatContext *s, SdiMuxContext *sdi, AVStream *audio_stream)
+{
+    AVCodecParameters *par = audio_stream->codecpar;
+    DtapiResult result;
+
+    if (par->codec_id != AV_CODEC_ID_PCM_S24LE && par->codec_id != AV_CODEC_ID_PCM_S32LE) {
+        av_log(s, AV_LOG_ERROR, "Unsupported audio codec %s\n",
+               avcodec_get_name(par->codec_id));
+        return AVERROR(EINVAL);
+    }
+    if (par->sample_rate != 48000) {
+        av_log(s, AV_LOG_ERROR, "Unsupported sample rate %d\n", par->sample_rate);
+        return AVERROR(EINVAL);
+    }
+
+    // The audio buffer counts in samples, whatever time base the stream came with
+    avpriv_set_pts_info(audio_stream, 64, 1, par->sample_rate);
+
+    sdi->stream_nr_ch = par->ch_layout.nb_channels;
+    sdi->audio_nr_ch = sdi->option_audio_nr_ch == -1 ? sdi->stream_nr_ch
+                                                     : sdi->option_audio_nr_ch;
+    if (sdi->audio_nr_ch < 1 || sdi->audio_nr_ch > AUDIO_MAX_CHANNELS) {
+        av_log(s, AV_LOG_ERROR, "SDI carries 1 to %d audio channels, not %d\n",
+               AUDIO_MAX_CHANNELS, sdi->audio_nr_ch);
+        return AVERROR(EINVAL);
+    }
+    sdi->bytes_per_sample = av_get_bits_per_sample(par->codec_id) / 8;
+
+    result = DtSdiAudio_MaxSamples(sdi->vidstd, &sdi->max_samples);
+    if (result != DTAPI_OK)
+        return AVERROR(EINVAL);
+    sdi->audio_in = av_malloc((size_t)sdi->max_samples * sdi->stream_nr_ch *
+                              sdi->bytes_per_sample);
+    sdi->audio_buf = av_malloc_array((size_t)sdi->max_samples * sdi->audio_nr_ch,
+                                     sizeof(*sdi->audio_buf));
+    if (!sdi->audio_in || !sdi->audio_buf)
+        return AVERROR(ENOMEM);
+    sdi->audio_stream = audio_stream;
+    sdi->audio_pts = AV_NOPTS_VALUE;
     return 0;
 }
 
@@ -620,59 +500,26 @@ static int sdi_init(AVFormatContext *s)
     if (ret < 0)
         return ret;
 
-    // Store info in private data. Some data is just for convenience.
-    sdi->src_width = width;
-    sdi->src_height = height;
-    sdi->has_sub_images = ff_has_sub_images(sdi_info->payload_format);
-    sdi->is_sd = ff_is_sd(sdi_info->payload_format);
-    if (is_interlaced_transport(sdi_info->scanning_method)) {
-        sdi->is_interlaced_transport = 1;
-    } else {
-        sdi->is_interlaced_transport = 0;
-    }
-
     sdi_frame_size = sdi_info->nr_sdi_lines * (sdi_info->nr_hanc_symbols + sdi_info->nr_vanc_symbols) * 10 / 8;
     aligned_frame_size = (sdi_frame_size + 7) & ~7; // align to 8-byte
     sdi->frame_padding = aligned_frame_size - sdi_frame_size;
 
+    ret = init_builder(s, sdi);
+    if (ret < 0)
+        return ret;
+
     prepare_buffers(s);
 
-    av_log(s, AV_LOG_DEBUG, "Frame size %d with padding %d\n",
-            sdi_info->nr_sdi_lines * (sdi_info->nr_hanc_symbols + sdi_info->nr_vanc_symbols) * 10 / 8,
-            sdi->frame_padding);
-    av_log(s, AV_LOG_DEBUG, "  Lines:   %d\n", sdi_info->nr_sdi_lines);
-    av_log(s, AV_LOG_DEBUG, "  Hanc:    %d\n", sdi_info->nr_hanc_symbols);
-    av_log(s, AV_LOG_DEBUG, "  Vanc:    %d\n", sdi_info->nr_vanc_symbols);
-    av_log(s, AV_LOG_DEBUG, "  Padding: %d\n", sdi->frame_padding);
+    av_log(s, AV_LOG_DEBUG, "Frame size %d with padding %d\n", sdi->frame_size,
+           sdi->frame_padding);
 
     /*
      * Setup audio
      */
     if (audio_stream) {
-        sdi->audio = ff_sdi_audio_alloc();
-        if (!sdi->audio)
-            return AVERROR(ENOMEM);
-
-        ret = ff_sdi_audio_init(sdi->audio, s, sdi->option_audio_nr_ch, sdi->buffer[audio_stream->index], sdi_info, audio_stream);
-        if (ret != 0)
+        ret = init_audio(s, sdi, audio_stream);
+        if (ret < 0)
             return ret;
-    }
-
-    if (sdi->has_sub_images) {
-#if HAVE_INTRINSICS_SSE2
-        if (X86_SSE2(av_get_cpu_flags()))
-            sdi->from_planar = from_planar_2si_sse;
-        else
-#endif
-            sdi->from_planar = from_planar_2si;
-    }
-#if HAVE_INTRINSICS_SSE2
-    else if (X86_SSSE3(av_get_cpu_flags())) {
-        sdi->from_planar = from_planar_sse;
-    }
-#endif
-    else {
-        sdi->from_planar = from_planar;
     }
 
     return 0;
@@ -681,10 +528,11 @@ static int sdi_init(AVFormatContext *s)
 static void sdi_deinit(AVFormatContext *s)
 {
     SdiMuxContext *sdi = s->priv_data;
-    av_free (sdi->blank);
-    av_free (sdi->line_buf);
-    av_free (sdi->frame_buf);
-    ff_sdi_audio_freep(&sdi->audio);
+    DtSdiBuilder_Freep(&sdi->builder);
+    DtSdiView_Freep(&sdi->view);
+    av_freep(&sdi->frame_buf);
+    av_freep(&sdi->audio_in);
+    av_freep(&sdi->audio_buf);
     for (int i = 0; i < FFMIN(s->nb_streams, MAX_STREAMS); ++i) {
         ff_sdi_buffer_freep(&sdi->buffer[i]);
     }
@@ -703,348 +551,109 @@ static int sdi_write_sdi_header(AVFormatContext *s)
 }
 
 /*
- * Write nr_ch eav/sav patterns, return nr. of symbols written
- */
-static int store_eav_sav(uint16_t *buf, int nr_ch, uint16_t eav_sav)
-{
-    int i;
-    for (i = 0; i < nr_ch; i++)
-        *buf++ = 0x3ff;
-    for (i = 0; i < nr_ch * 2; i++)
-        *buf++ = 0x000;
-    for (i = 0; i < nr_ch; i++)
-        *buf++ = eav_sav;
-    return nr_ch * 4;
-}
-
-/*
- * Write line numbers, return nr. of symbols written
- */
-static int store_line_number(uint16_t *buf, int nr_ch, int LineNr)
-{
-    int i;
-    uint16_t LN0 = (LineNr << 2) & (0x7f << 2);
-    uint16_t LN1 = (LineNr >> 5) & (0x7f << 2);
-
-    LN0 |= (~LN0 & 0x100) << 1;
-    LN1 |= (~LN1 & 0x100) << 1;
-
-    for (i = 0; i < nr_ch; i++)
-        *buf++ = LN0;
-    for (i = 0; i < nr_ch; i++)
-        *buf++ = LN1;
-    return nr_ch * 2;
-}
-
-/*
- * Write crc codes, return nr. of symbols written
- */
-static int store_crc(uint16_t *buf, int nr_ch, uint32_t* crc)
-{
-    int i;
-    for (i = 0; i < nr_ch; i++)
-    {
-        uint16_t CRC0 = (crc[i] >> 0) & 0x1ff;
-        uint16_t CRC1 = (crc[i] >> 9) & 0x1ff;
-        buf[i] = CRC0 | ((~CRC0 & 0x100) << 1);
-        buf[i + nr_ch] = CRC1 | ((~CRC1 & 0x100) << 1);
-    }
-    return nr_ch * 2;
-}
-
-static void update_crc(uint32_t *crc, int nr_ch, uint16_t* pin, int n)
-{
-    // InvPolynom is x(18) + x(5) + x(4) + 1
-    const uint32_t InvPolynom = (1 << (17 - 5)) | (1 << (17 - 4)) | (1 << 17);
-    int i, bit;
-    for (i = 0; i < n; i++)
-    {
-        // Update CRC, for the correct channel
-        int  Ch = i & (nr_ch - 1);
-        crc[Ch] ^= (uint32_t)(*pin);
-        for (bit = 0; bit < 10; bit++)
-        {
-            if ((crc[Ch] & 1) != 0)
-                crc[Ch] = (crc[Ch] >> 1) ^ InvPolynom;
-            else
-                crc[Ch] >>= 1;
-        }
-    }
-}
-
-/*
- * Pack the 10 LSBs in each word of pin into the frame buffer. A whole frame is packed
- * before any of it is handed to the stream: a write per line, let alone per ten bytes,
- * costs more than the packing itself.
- */
-static void write_10b_packed(SdiMuxContext *sdi, const uint16_t *pin, int len)
-{
-    #define Z (uint8_t)0x80
-    #define multiplier (_mm_set_epi16(64, 16, 4, 1, 64, 16, 4, 1))
-    #define shuffle_even (_mm_set_epi8(Z, Z, Z, Z, Z, Z, Z, 13, 12, 9, 8, Z, 5, 4, 1, 0))
-    #define shuffle_odd (_mm_set_epi8(Z, Z, Z, Z, Z, Z, 15, 14, 11, 10, Z, 7, 6, 3, 2, Z))
-
-    int symlen = 10;
-    uint8_t *out = sdi->frame_ptr;
-
-    while (sdi->bitpos != 0 && len > 0) {
-        // Store word
-        sdi->out_word[0] |= *pin << sdi->bitpos;
-        sdi->out_word[1] = (*pin >> (31 - sdi->bitpos)) >> 1;
-        sdi->bitpos += symlen;
-        // if 32 bits or more collected, store them
-        if ((sdi->bitpos >> 5) > 0)
-        {
-            memcpy(out, sdi->out_word, 4);
-            out += 4;
-            sdi->out_word[0] = sdi->out_word[1];
-        }
-        sdi->bitpos &= 0x1F;
-        pin++;
-        len--;
-    }
-#if HAVE_INTRINSICS_SSE2
-    if (X86_SSSE3(av_get_cpu_flags())) {
-        while (len >= 8) {
-            __m128i symbols, symbols_even, symbols_odd;
-
-            symbols = _mm_loadu_si128((__m128i*)pin);
-            symbols = _mm_mullo_epi16(symbols, multiplier);
-            symbols_even = _mm_shuffle_epi8(symbols, shuffle_even);
-            symbols_odd = _mm_shuffle_epi8(symbols, shuffle_odd);
-            // Six bytes past the ten wanted are written, which the next step, the rest
-            // of the frame or the slack at the end of the buffer takes.
-            _mm_storeu_si128((__m128i*)out, _mm_or_si128(symbols_even, symbols_odd));
-
-            out += 10;
-            pin += 8;
-            len -= 8;
-        }
-    }
-#endif
-    while (len--) {
-        // Store word
-        sdi->out_word[0] |= *pin << sdi->bitpos;
-        sdi->out_word[1] = (*pin >> (31 - sdi->bitpos)) >> 1;
-        sdi->bitpos += symlen;
-        // if 32 bits or more collected, store them
-        if ((sdi->bitpos >> 5) > 0)
-        {
-            memcpy(out, sdi->out_word, 4);
-            out += 4;
-            sdi->out_word[0] = sdi->out_word[1];
-        }
-        sdi->bitpos &= 0x1F;
-        pin++;
-    }
-
-    sdi->frame_ptr = out;
-
-    #undef Z
-    #undef multiplier
-    #undef shuffle_even
-    #undef shuffle_odd
-}
-
-/*
- * Write a new SDI frame.
- * Prerequisite: there should be enough audio in the FIFO!
+ * Take the samples of the next frame from the audio stream, as many as the builder
+ * embeds in it, into audio_buf; samples the stream does not have are silent. Sets up
+ * audio to point the builder at them.
  *
+ * The samples follow on from those of the frame before. At a 1001 rate a frame does not
+ * start on a sample, and its number of samples follows the cadence, so the first sample
+ * of a frame is counted on from the first frame's rather than worked out from its time.
+ */
+static int get_frame_audio(AVFormatContext *s, SdiMuxContext *sdi, DtSdiAudio *audio)
+{
+    int stream_index = sdi->audio_stream->index;
+    int bps = sdi->bytes_per_sample;
+    int stride = sdi->stream_nr_ch * bps;
+    int nr_samples = 0;
+    DtapiResult result;
+
+    result = DtSdiBuilder_GetNumAudioSamples(sdi->builder, sdi->vidstd, 0, &nr_samples);
+    if (result != DTAPI_OK)
+        return AVERROR(EINVAL);
+
+    if (sdi->audio_pts == AV_NOPTS_VALUE)
+        sdi->audio_pts = av_rescale_q_rnd(sdi->next_pts, sdi->time_base,
+                                          sdi->audio_stream->time_base, AV_ROUND_UP);
+    memset(sdi->audio_in, 0, (size_t)nr_samples * stride);
+    ff_sdi_buffer_get_audio(sdi->buffer[stream_index], sdi->audio_in,
+                            nr_samples * stride, sdi->audio_pts, nr_samples);
+    sdi->audio_pts += av_rescale_q(nr_samples, (AVRational){ 1, 48000 },
+                                   sdi->audio_stream->time_base);
+
+    // The builder takes 24 bits at the top of 32
+    for (int i = 0; i < nr_samples; i++) {
+        const uint8_t *in = sdi->audio_in + (size_t)i * stride;
+        int32_t *out = sdi->audio_buf + (size_t)i * sdi->audio_nr_ch;
+        for (int ch = 0; ch < sdi->audio_nr_ch; ch++) {
+            if (ch >= sdi->stream_nr_ch)
+                out[ch] = 0;
+            else if (bps == 3)
+                out[ch] = (int32_t)(AV_RL24(in + ch * bps) << 8);
+            else
+                out[ch] = (int32_t)AV_RL32(in + ch * bps);
+        }
+    }
+
+    for (int ch = 0; ch < sdi->audio_nr_ch; ch++) {
+        audio->Formats[ch / 2] = DT_SDI_AUDIO_PCM;
+        audio->Channels[ch].Samples = sdi->audio_buf + ch;
+        audio->Channels[ch].Stride = sdi->audio_nr_ch;
+        audio->Channels[ch].NumSamples = nr_samples;
+    }
+    return 0;
+}
+
+/*
+ * Write a new SDI frame, which CDTAPI's builder puts together from the image and the
+ * audio for its time.
  */
 static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt)
 {
-    int line = 0;
     SdiMuxContext *sdi = s->priv_data;
-    const struct SdiInfo *info = sdi->sdi_info;
-    int nr_ch = ff_sdi_get_nr_channels(info->payload_format);
-    int line_len = info->nr_hanc_symbols + info->nr_vanc_symbols;
-    int h_blank_cnt = info->nr_hanc_symbols - nr_ch * 8;
-    int pad = sdi->frame_padding;
-    uint16_t* py, *pu, *pv;
-    int width = sdi->src_width;
-    int read_stride[3] = {0};
-    int h_start = 0;
-    int h_end = 0;
-
-    AVFrame *arg_frame;
+    AVFrame *arg_frame = (AVFrame*)arg_pkt->data;
     AVFrame *frame;
-
-    arg_frame = (AVFrame*)arg_pkt->data;
+    DtSdiImage image = { 0 };
+    DtSdiAudio audio = { 0 };
+    DtapiResult result;
+    int ret;
 
     // Scale frame if needed
     if (sdi->scale_context) {
-        int result = 0;
-
         frame = sdi->scale_frame;
-
-        width = frame->width;
-
-        result = sws_scale_frame(sdi->scale_context, frame, arg_frame);
-        if (result <= 0) {
-            return result;
-        }
+        ret = sws_scale_frame(sdi->scale_context, frame, arg_frame);
+        if (ret <= 0)
+            return ret;
     } else {
         frame = arg_frame;
     }
 
-    if (nr_ch > 1)
-        h_blank_cnt -= nr_ch * (2 + 2); // line nr and crc
-
-    // Set pointers to source video
-    py = (uint16_t*)frame->data[0];
-    pu = (uint16_t*)frame->data[1];
-    pv = (uint16_t*)frame->data[2];
-
-    // The read_stride is the stride in symbols that is used when reading the
-    // input image. When using subimages, we read two video lines per SDI line.
-    // And with interlaced transport, we read one video line per SDI line and
-    // skip the next line (which is writter to the other field).
-    read_stride[0] = frame->linesize[0] / 2;
-    read_stride[1] = frame->linesize[1] / 2;
-    read_stride[2] = frame->linesize[2] / 2;
-    if (sdi->has_sub_images) {
-        read_stride[0] *= 2;
-        read_stride[1] *= 2;
-        read_stride[2] *= 2;
-    }
-    if (is_interlaced_transport(info->scanning_method)) {
-        read_stride[0] *= 2;
-        read_stride[1] *= 2;
-        read_stride[2] *= 2;
+    image.Format = DT_SDI_PIXFMT_YUV422P_10B;
+    image.Fields = DT_SDI_FIELDS_WOVEN;
+    for (int i = 0; i < 3; i++) {
+        image.Planes[i] = frame->data[i];
+        image.Strides[i] = frame->linesize[i];
     }
 
-    // Calculate position of the picture in the SDI frame
-    if (!sdi->has_sub_images) {
-        // Align to multiple of 4 (UYVY group)
-        h_start = (2 * ((info->picture_width - width) >> 1)) & ~3;
-        h_end = h_start + 2 * width;
-    } else {
-        // Align to multiple of 16
-        h_start = (4 * ((info->picture_width - width) >> 1)) & ~15;
-        h_end = h_start + 4 * width;
+    if (sdi->audio_stream) {
+        ret = get_frame_audio(s, sdi, &audio);
+        if (ret < 0)
+            return ret;
     }
 
-    sdi->out_word[0] = sdi->out_word[1] = 0;
-    sdi->bitpos = 0;
-    sdi->frame_ptr = sdi->frame_buf;
-
-    if (sdi->audio) {
-        sdi->audio->pkt_cnt = 0;
-        for (int i = 0; i < s->nb_streams; i++) {
-            if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-                int64_t next_pts = av_rescale_q_rnd(sdi->next_pts, sdi->time_base, s->streams[i]->time_base, AV_ROUND_UP);
-                ff_sdi_audio_frame_start(sdi->audio, next_pts);
-                break;
-            }
-        }
-    }
-
-    // Construct SDI frame
-    for (line = 1; line <= info->nr_sdi_lines; line++) {
-        uint16_t *line_ptr = sdi->line_buf;
-        int used = 0;
-        int hanc_avail = h_blank_cnt;
-
-        // First determine line type
-        int is_vb = ff_is_vbi_line(sdi->sdi_info, line);
-        int is_f2 = ff_get_field_nr(sdi->sdi_info, line) == 2;
-        uint16_t eav = get_sav_eav_word(is_vb, is_f2, 1);
-        uint16_t sav = get_sav_eav_word(is_vb, is_f2, 0);
-
-        // Construct hanc
-        line_ptr += store_eav_sav(line_ptr, nr_ch, eav);
-        if (nr_ch > 1) {
-            line_ptr += store_line_number(line_ptr, nr_ch, line);
-            if (sdi->option_calc_crc) {
-                update_crc(sdi->crc, nr_ch, sdi->line_buf, line_ptr - sdi->line_buf);
-            }
-            line_ptr += store_crc(line_ptr, nr_ch, sdi->crc);
-        }
-
-        // Fill with blanking first, possible packet will overwrite the blanking
-        write_blanking(line_ptr, hanc_avail, 0x200);
-
-        // Insert payload ID packets
-        used = ff_sdi_insert_payloadid(line_ptr, line, sdi->sdi_info);
-        line_ptr += used;
-        hanc_avail -= used;
-
-        // Insert audio packets
-        if (sdi->audio)
-            ff_sdi_audio_insert(sdi->audio, line_ptr, hanc_avail, line);
-
-        line_ptr += hanc_avail;
-        line_ptr += store_eav_sav(line_ptr, nr_ch, sav);
-
-        // Write vanc or video
-        if (is_vb) {
-            write_blanking(line_ptr, info->nr_vanc_symbols, 0x200);
-        } else {
-            // On the first line of field 2, reset pointers to line 1 of the
-            // picture.
-            if (line == info->vid_start_line_field2) {
-                py = (uint16_t*)(frame->data[0] + frame->linesize[0]);
-                pu = (uint16_t*)(frame->data[1] + frame->linesize[1]);
-                pv = (uint16_t*)(frame->data[2] + frame->linesize[2]);
-            }
-
-            if (ff_is_video_line(info, line)) {
-                if (h_start > 0)
-                    write_blanking(line_ptr, h_start, 0x200);
-                sdi->from_planar(py, pu, pv, line_ptr + h_start, width);
-                py += read_stride[0];
-                pu += read_stride[1];
-                pv += read_stride[2];
-                if (h_end < info->nr_vanc_symbols)
-                    write_blanking(line_ptr + h_end, (info->nr_vanc_symbols - h_end), 0x200);
-            } else {
-                write_blanking(line_ptr, info->nr_vanc_symbols, 0x200);
-            }
-        }
-
-        // calculate CRC over active line or vanc
-        if (nr_ch > 1) {
-            memset(sdi->crc, 0, nr_ch * sizeof(sdi->crc[0]));
-            if (sdi->option_calc_crc) {
-                update_crc(sdi->crc, nr_ch, line_ptr, line_len - (line_ptr - sdi->line_buf));
-            }
-        }
-
-        // convert line to 10-bit
-        write_10b_packed(sdi, sdi->line_buf, line_len);
+    result = DtSdiView_SetRawFrame(sdi->view, sdi->frame_buf, sdi->frame_size,
+                                   sdi->vidstd, 10);
+    if (result == DTAPI_OK)
+        result = DtSdiBuilder_Build(sdi->builder, sdi->view, &image,
+                                    sdi->audio_stream ? &audio : NULL, NULL);
+    if (result != DTAPI_OK) {
+        av_log(s, AV_LOG_ERROR, "Could not build the frame: %s\n",
+               DtapiResult2Str(result));
+        return AVERROR(EINVAL);
     }
 
     sdi->next_pts += 1;
 
-    if (sdi->audio) {
-        int queued_samples = sdi->audio->queued_samples / sdi->audio->nr_ch;
-        AVRational sample_duration = {1000, sdi->audio->rate};
-        AVRational queued_duration = av_mul_q(sample_duration, (AVRational){queued_samples,1});
-        
-        av_log(s, AV_LOG_DEBUG, "SDI MUX FRAME:%d AF:%d Pkts:%d bytes:%"PRId64" queued:%d queued_duration:%.2fms\n",
-                sdi->num_frames + 1,
-                sdi->audio->af,
-                sdi->audio->pkt_cnt,
-                av_fifo_can_read(sdi->audio->fifo),
-                queued_samples,
-                queued_duration.num/(double)queued_duration.den);
-    }
-
-    // Update audio counters
-    if (sdi->audio)
-        ff_sdi_audio_frame_end(sdi->audio);
-
-    // Add remaining data and padding, if any, and write the frame in one go.
-    if (sdi->bitpos > 0) {
-        memcpy(sdi->frame_ptr, sdi->out_word, sdi->bitpos / 8);
-        sdi->frame_ptr += sdi->bitpos / 8;
-    }
-    if (pad > 0) {
-        memset(sdi->frame_ptr, 0, pad);
-        sdi->frame_ptr += pad;
-    }
-    avio_write(s->pb, sdi->frame_buf, sdi->frame_ptr - sdi->frame_buf);
-
+    avio_write(s->pb, sdi->frame_buf, sdi->frame_size);
     return 0;
 }
 
@@ -1221,6 +830,8 @@ static const AVOption options[] = {
     { "quadrant", NULL, 0, AV_OPT_TYPE_CONST, { .i64 = SDI_INTERLEAVING_TYPE_QUADRANT }, 0, 0, AV_OPT_FLAG_ENCODING_PARAM, "interleaving_type" },
     { "calc_crc", "", offsetof(SdiMuxContext, option_calc_crc), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, AV_OPT_FLAG_ENCODING_PARAM, NULL },
     { "no_header", "", offsetof(SdiMuxContext, option_no_header), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM, NULL },
+    { "threads", "threads a frame is put together over: auto, 1 for one, or more", offsetof(SdiMuxContext, threads), AV_OPT_TYPE_INT, { .i64 = FF_SDI_THREADS_AUTO }, 0, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM, "threads" },
+    { "auto", "4 threads, and as many pieces as the standard calls for", 0, AV_OPT_TYPE_CONST, { .i64 = FF_SDI_THREADS_AUTO }, 0, 0, AV_OPT_FLAG_ENCODING_PARAM, "threads" },
 
     { NULL },
 };

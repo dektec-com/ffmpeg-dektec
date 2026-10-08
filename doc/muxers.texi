@@ -3348,14 +3348,20 @@ header that names the SDI standard, and the frame count when the output is
 seekable. The @code{dektec} output device uses this muxer to make its SDI
 frames.
 
+CDTAPI's SDI builder puts the frames together, so the muxer needs FFmpeg
+configured with @code{--enable-libcdtapi}. Each frame carries the payload ID
+of SMPTE ST 352, and the audio as SMPTE ST 299-1 has it, or ST 272 in SD.
+
 The video stream is coded with @code{wrapped_avframe}. Frames that are not
 @code{yuv422p10le} at the picture size of the standard are scaled and
 converted to it; the largest input is 3840x2160. An interlaced standard needs
 top field first video, e.g. with the @code{setfield=tff} filter.
 
 The audio stream is @code{pcm_s24le} or @code{pcm_s32le} at 48 kHz, and is
-embedded in the horizontal ancillary data: up to 4 channels for SD-SDI, and up
-to 16 for the other standards.
+embedded in the horizontal ancillary data: up to 16 channels, in groups of
+four. The channels of a group that the stream does not fill carry silence
+marked as not valid. Of @code{pcm_s32le} the upper 24 bits are embedded, and
+in SD the upper 20.
 
 @subsection Options
 
@@ -3373,16 +3379,22 @@ video stream.
 @item sdi_nr_audio
 Set the number of audio channels embedded in the SDI frames. Default is -1,
 the number of channels of the audio stream. Allowed range is from 1 to 16.
+Channels beyond those of the audio stream are silent.
 
 @item calc_crc @var{bool}
-Calculate the CRC of each line. Default is enabled. Disabling it makes the
-muxer faster; the @code{dektec} output device disables it, because the card
-calculates the CRCs.
+Calculate the CRC of each line and the checksum of each ancillary packet.
+Default is enabled. Disabling it makes the muxer faster; the @code{dektec}
+output device disables it, because the card calculates them.
 
 @item no_header @var{bool}
 Do not write the file header, so that the output is SDI frames only. Default
 is disabled. A file without a header can only be read back with the
 @code{sdi} demuxer's @option{no_header} and @option{sdi_standard}.
+
+@item threads
+Set the number of threads a frame is put together over. @samp{auto}, the
+default, starts 4 threads and divides a frame as its standard calls for; 1
+puts it together in the muxing thread.
 
 @end table
 

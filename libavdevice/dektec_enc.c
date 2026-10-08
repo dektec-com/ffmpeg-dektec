@@ -701,6 +701,7 @@ static int outpchannel_write_header(AVFormatContext *s)
     av_dict_set(&options, "no_header", "1", 0);
     av_dict_set(&options, "calc_crc", "0", 0); // HW will do CRC
     av_dict_set(&options, "sdi_standard", context->option_standard, 0);
+    av_dict_set_int(&options, "threads", context->threads, 0);
     ret = avformat_write_header(context->format_context, &options);
     if (ret != 0)
         return ret;
