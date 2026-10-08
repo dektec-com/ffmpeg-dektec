@@ -82,6 +82,10 @@ typedef struct SDIDemuxContext {
     int audio_samples;     ///< samples per channel of the last frame, yet to go out
     int warned_nr_ch;      ///< whether a change in the number of channels was logged
     int64_t audio_pts;     ///< pts of the frame the audio came with
+
+    SdiFrameSource source; ///< lends the frames, instead of the input; see sdicommon.h
+    int64_t frame_index;   ///< the frames lent so far, for their pts
+    int warned_vidstd;     ///< whether a lent frame of another standard was logged
 } SDIDemuxContext;
 
 static void free_frame(void *opaque, uint8_t *data)
@@ -264,7 +268,8 @@ static int sdi_setup(AVFormatContext *s)
         return AVERROR(ENOMEM);
     sdi->audio_index = -1;
 
-    frame_count = (avio_size(s->pb) - sdi->header_size) / sdi->frame_size;
+    // The device's input has no size
+    frame_count = FFMAX(avio_size(s->pb) - sdi->header_size, 0) / sdi->frame_size;
 
     rrate = av_sdi_rate(sdi_info->picture_rate);
     sdi->frame_duration = (1000000 * rrate.den + rrate.num - 1)/ rrate.num;  // in us, rounded up
@@ -555,6 +560,52 @@ static int read_audio_packet(AVFormatContext *s, AVPacket *pkt)
 }
 
 /*
+ * Point the view at the next frame: one the source lends, or one read from the input.
+ * Sets *pos to the frame's position in the input, or to -1 for a lent frame.
+ */
+static int get_frame(AVFormatContext *s, int64_t *pos)
+{
+    SDIDemuxContext *sdi = s->priv_data;
+    DtapiResult result;
+    int vidstd = 0;
+    int ret;
+
+    if (sdi->source.acquire) {
+        *pos = -1;
+        ret = sdi->source.acquire(sdi->source.opaque, sdi->view);
+        if (ret < 0)
+            return ret;
+        // A signal of another standard does not fit the streams
+        DtSdiView_GetFormat(sdi->view, &vidstd, NULL);
+        if (vidstd != sdi->vidstd) {
+            sdi->source.release(sdi->source.opaque, sdi->view);
+            if (!sdi->warned_vidstd)
+                av_log(s, AV_LOG_WARNING, "Frames of another standard than %s are "
+                       "left out\n", sdi->sdi_info->name);
+            sdi->warned_vidstd = 1;
+            return AVERROR(EAGAIN);
+        }
+        return 0;
+    }
+
+    *pos = avio_tell(s->pb);
+    ret = avio_read(s->pb, sdi->frame_buf, sdi->frame_size);
+    if (ret < 0)
+        return ret;
+    if (ret < sdi->frame_size)
+        return AVERROR_EOF;
+
+    result = DtSdiView_SetRawFrame(sdi->view, sdi->frame_buf, sdi->frame_size,
+                                   sdi->vidstd, 10);
+    if (result != DTAPI_OK) {
+        av_log(s, AV_LOG_ERROR, "Could not point the parser at the frame: %s\n",
+               DtapiResult2Str(result));
+        return AVERROR_INVALIDDATA;
+    }
+    return 0;
+}
+
+/*
  * Read one packet and put it in 'pkt'. pts and flags are also
  * set. 'avformat_new_stream' can be called only if the flag
  * AVFMTCTX_NOHEADER is used and only in the calling thread (not in a
@@ -563,8 +614,9 @@ static int read_audio_packet(AVFormatContext *s, AVPacket *pkt)
  *         When returning an error, pkt must not have been allocated
  *         or must be freed before returning
  *
- * Read a single SDI frame and take it apart with CDTAPI's parser into its image, which
- * goes out now, and its audio, which goes out with the next call.
+ * Read a single SDI frame, or take one from the source, and take it apart with CDTAPI's
+ * parser into its image, which goes out now, and its audio, which goes out with the
+ * next call. A lent frame goes back as soon as the parser is done with it.
  */
 static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
@@ -579,21 +631,6 @@ static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
 
     if (sdi->audio_samples > 0)
         return read_audio_packet(s, pkt);
-
-    pos = avio_tell(s->pb);
-    ret = avio_read(s->pb, sdi->frame_buf, sdi->frame_size);
-    if (ret < 0)
-        return ret;
-    if (ret < sdi->frame_size)
-        return AVERROR_EOF;
-
-    result = DtSdiView_SetRawFrame(sdi->view, sdi->frame_buf, sdi->frame_size,
-                                   sdi->vidstd, 10);
-    if (result != DTAPI_OK) {
-        av_log(s, AV_LOG_ERROR, "Could not point the parser at the frame: %s\n",
-               DtapiResult2Str(result));
-        return AVERROR_INVALIDDATA;
-    }
 
     frame = av_frame_alloc();
     if (!frame)
@@ -614,6 +651,12 @@ static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
         frame->linesize[i] = sdi->linesize[i];
     frame->extended_data = frame->data;
 
+    ret = get_frame(s, &pos);
+    if (ret < 0) {
+        av_frame_free(&frame);
+        return ret;
+    }
+
     image.Format = DT_SDI_PIXFMT_YUV422P_10B;
     image.Fields = DT_SDI_FIELDS_WOVEN;
     for (int i = 0; i < 3; i++) {
@@ -630,6 +673,8 @@ static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
     }
 
     result = DtSdiParser_Parse(sdi->parser, sdi->view, &image, &audio, NULL);
+    if (sdi->source.release)
+        sdi->source.release(sdi->source.opaque, sdi->view);
     if (result != DTAPI_OK) {
         av_log(s, AV_LOG_ERROR, "Could not take the frame apart: %s\n",
                DtapiResult2Str(result));
@@ -650,7 +695,12 @@ static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
     pkt->flags |= AV_PKT_FLAG_TRUSTED;
     pkt->pos = pos;
     pkt->stream_index = VIDEO_STREAM_ID;
-    pkt->pts = pkt->dts = sdi->frame_duration * (pos - sdi->header_size) / sdi->frame_size;
+    if (pos >= 0)
+        pkt->pts = sdi->frame_duration * (pos - sdi->header_size) / sdi->frame_size;
+    else
+        pkt->pts = sdi->frame_duration * sdi->frame_index;
+    pkt->dts = pkt->pts;
+    sdi->frame_index++;
     pkt->duration = sdi->frame_duration;
     // The frame's audio goes out with the next call, at the frame's time
     sdi->audio_pts = pkt->pts;
@@ -660,6 +710,17 @@ static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
         av_packet_unref(pkt);
         return ret;
     }
+    return 0;
+}
+
+int av_sdi_demux_set_source(AVFormatContext *s, const SdiFrameSource *source)
+{
+    SDIDemuxContext *sdi;
+
+    if (!s->iformat || strcmp(s->iformat->name, "sdi") || !s->priv_data)
+        return AVERROR(EINVAL);
+    sdi = s->priv_data;
+    sdi->source = *source;
     return 0;
 }
 

@@ -43,6 +43,7 @@
 #include "cdtapi_sdi.h"
 
 #include <inttypes.h>
+#include <string.h>
 
 #define MAX_STREAMS 8
 
@@ -85,6 +86,8 @@ typedef struct SdiMuxContext {
     uint8_t *audio_in;        ///< a frame's samples, as the audio stream has them
     int32_t *audio_buf;       ///< the same, 24 bits at the top of 32, interleaved
     int64_t audio_pts;        ///< pts of the next frame's first sample
+
+    SdiFrameSink sink;        ///< lends room for the frames, instead of the output
 } SdiMuxContext;
 
 static int put_sdi_format(struct PutBitContext *pb, struct Format *format)
@@ -604,8 +607,29 @@ static int get_frame_audio(AVFormatContext *s, SdiMuxContext *sdi, DtSdiAudio *a
 }
 
 /*
+ * Point the view at room for the next frame: room the sink lends, or the muxer's own
+ * buffer.
+ */
+static int get_room(AVFormatContext *s, SdiMuxContext *sdi)
+{
+    DtapiResult result;
+
+    if (sdi->sink.acquire)
+        return sdi->sink.acquire(sdi->sink.opaque, sdi->view);
+
+    result = DtSdiView_SetRawFrame(sdi->view, sdi->frame_buf, sdi->frame_size,
+                                   sdi->vidstd, 10);
+    if (result != DTAPI_OK) {
+        av_log(s, AV_LOG_ERROR, "Could not point the builder at the frame: %s\n",
+               DtapiResult2Str(result));
+        return AVERROR(EINVAL);
+    }
+    return 0;
+}
+
+/*
  * Write a new SDI frame, which CDTAPI's builder puts together from the image and the
- * audio for its time.
+ * audio for its time, in the muxer's buffer or in room the sink lends.
  */
 static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt)
 {
@@ -640,19 +664,28 @@ static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt)
             return ret;
     }
 
-    result = DtSdiView_SetRawFrame(sdi->view, sdi->frame_buf, sdi->frame_size,
-                                   sdi->vidstd, 10);
-    if (result == DTAPI_OK)
-        result = DtSdiBuilder_Build(sdi->builder, sdi->view, &image,
-                                    sdi->audio_stream ? &audio : NULL, NULL);
+    ret = get_room(s, sdi);
+    if (ret < 0)
+        return ret;
+    result = DtSdiBuilder_Build(sdi->builder, sdi->view, &image,
+                                sdi->audio_stream ? &audio : NULL, NULL);
     if (result != DTAPI_OK) {
         av_log(s, AV_LOG_ERROR, "Could not build the frame: %s\n",
                DtapiResult2Str(result));
-        return AVERROR(EINVAL);
+        // Lent room is handed on all the same, black and silent: until it is, the sink
+        // lends no more
+        if (!sdi->sink.commit ||
+            DtSdiBuilder_Build(sdi->builder, sdi->view, NULL, NULL, NULL) != DTAPI_OK ||
+            sdi->sink.commit(sdi->sink.opaque, sdi->view) < 0)
+            return AVERROR(EINVAL);
+        sdi->next_pts += 1;
+        return 0;
     }
 
     sdi->next_pts += 1;
 
+    if (sdi->sink.commit)
+        return sdi->sink.commit(sdi->sink.opaque, sdi->view);
     avio_write(s->pb, sdi->frame_buf, sdi->frame_size);
     return 0;
 }
@@ -693,6 +726,17 @@ static int sdi_write_packet_internal(struct AVFormatContext *s)
         sdi->num_frames++;
     av_packet_unref(&pkt);
     return ret;
+}
+
+int av_sdi_mux_set_sink(AVFormatContext *s, const SdiFrameSink *sink)
+{
+    SdiMuxContext *sdi;
+
+    if (!s->oformat || strcmp(s->oformat->name, "sdi") || !s->priv_data)
+        return AVERROR(EINVAL);
+    sdi = s->priv_data;
+    sdi->sink = *sink;
+    return 0;
 }
 
 static int64_t to_stream_time(SdiMuxContext *sdi, int64_t sdi_pts,

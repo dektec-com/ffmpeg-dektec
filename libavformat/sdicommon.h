@@ -351,6 +351,46 @@ int av_sdi_vidstd(const struct SdiInfo *info);
  */
 int ff_sdi_worker_pool(void *log_ctx, int threads, DtWorkerPool **pool, int *num_threads);
 
+/*
+ * Where the sdi demuxer takes its frames from instead of its input. The dektec input
+ * device lends it each frame where the card wrote it, so that the parser reads the frame
+ * in place.
+ */
+typedef struct SdiFrameSource {
+    void *opaque;
+    /* Points view at the next frame. Returns 0, AVERROR(EAGAIN) when no frame has
+     * arrived yet, or another error. */
+    int (*acquire)(void *opaque, DtSdiView *view);
+    /* Gives back the frame view points at, once the parser is done with it. */
+    void (*release)(void *opaque, DtSdiView *view);
+} SdiFrameSource;
+
+/**
+ * Make the sdi demuxer s take its frames from source rather than from its input. Call
+ * it after avformat_open_input() and before the first frame is read.
+ */
+int av_sdi_demux_set_source(AVFormatContext *s, const SdiFrameSource *source);
+
+/*
+ * Where the sdi muxer builds its frames instead of writing them to its output. The
+ * dektec output device lends it room for each frame in the card's transmit buffer, so
+ * that the builder builds the frame there.
+ */
+typedef struct SdiFrameSink {
+    void *opaque;
+    /* Points view at room for the next frame. Returns 0 or an error. */
+    int (*acquire)(void *opaque, DtSdiView *view);
+    /* Hands on the frame that the builder wrote where view points. Returns 0 or an
+     * error. */
+    int (*commit)(void *opaque, DtSdiView *view);
+} SdiFrameSink;
+
+/**
+ * Make the sdi muxer s build its frames where sink lends it room rather than write them
+ * to its output. Call it after avformat_write_header() and before the first packet.
+ */
+int av_sdi_mux_set_sink(AVFormatContext *s, const SdiFrameSink *sink);
+
 /**
  * Return lowest 9 bits of value, set bit 9 to not bit 8.
  */
