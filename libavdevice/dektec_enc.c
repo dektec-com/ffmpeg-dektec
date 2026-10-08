@@ -56,6 +56,8 @@
 #endif
 #endif
 
+#include <time.h>
+
 #define MAX_AUDIO_STREAMS 8
 #define MAX_VIDEO_STREAMS 1
 #define MAX_STREAMS MAX_AUDIO_STREAMS + MAX_VIDEO_STREAMS
@@ -68,6 +70,7 @@ typedef struct DekTecMuxContext {
     DtDevice* device;
     DtOutpChannel* output;
     int is_preloading;
+    int64_t total_underflows;       // Times the card ran out of frames while sending
 
     void (*copy)(const AVFrame *src, AvFifo_Frame *dst);
     void (*copy_interlaced)(const AVFrame *src, AvFifo_Frame *field0, AvFifo_Frame *field1);
@@ -180,14 +183,38 @@ static const AVOption options[] = {
         av_log(avcl, level, "[%" PRId64 "] " fmt, time, ##__VA_ARGS__);        \
     } while (0)
 
+// How long the sdi muxer waits for room for a frame in the card's buffer, in ms.
+#define LEND_TIMEOUT_MS 2000
+
+// The sdi muxer's output, which it never writes: it builds its frames in lend_room.
 static int write_packet(void *opaque, const uint8_t *buf, int buf_size)
 {
+    return AVERROR(EIO);
+}
+
+// Lends the sdi muxer room for its next frame in the card's transmit buffer, so that
+// its builder builds the frame there.
+static int lend_room(void *opaque, DtSdiView *view)
+{
     DekTecMuxContext *context = (DekTecMuxContext *)opaque;
-    unsigned int result = DtOutpChannel_Write(context->output, buf, buf_size);
+    unsigned int result = DtOutpChannel_AcquireFrame(context->output, view, LEND_TIMEOUT_MS);
     if (result != DTAPI_OK) {
-        av_log(NULL, AV_LOG_ERROR, "Could not write to DtOutpChannel: %s\n", DtapiResult2Str(result));
-        av_log(NULL, AV_LOG_ERROR, "buf_size=%d\n", buf_size);
-        return -1;
+        av_log(context, AV_LOG_ERROR, "Could not take room for a frame from "
+               "DtOutpChannel: %s\n", DtapiResult2Str(result));
+        return AVERROR(EIO);
+    }
+    return 0;
+}
+
+// Hands the card the frame the sdi muxer built in the room lend_room lent.
+static int send_frame(void *opaque, DtSdiView *view)
+{
+    DekTecMuxContext *context = (DekTecMuxContext *)opaque;
+    unsigned int result = DtOutpChannel_CommitFrame(context->output, view);
+    if (result != DTAPI_OK) {
+        av_log(context, AV_LOG_ERROR, "Could not hand DtOutpChannel the frame: %s\n",
+               DtapiResult2Str(result));
+        return AVERROR(EIO);
     }
     return 0;
 }
@@ -558,7 +585,6 @@ static int outpchannel_write_header(AVFormatContext *s)
     SdiFormat standard = 0;
     const struct SdiInfo *sdi_info;
     int vid_std;
-    int sdi_frame_size;
     void* iter_state = NULL;
     const struct AVOutputFormat *oformat = NULL;
     AVDictionary *options = NULL;
@@ -588,10 +614,6 @@ static int outpchannel_write_header(AVFormatContext *s)
         av_log(s, AV_LOG_ERROR, "Could not set TX control to IDLE\n");
         return -1;
     }
-
-    ret = ff_dektec_give_output_threads(s, context->output, context->threads);
-    if (ret < 0)
-        return ret;
 
     for (int i = 0; i < s->nb_streams; i++) {
         if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -653,10 +675,8 @@ static int outpchannel_write_header(AVFormatContext *s)
     }
     context->is_preloading = 1;
 
-    // Create avio context for device
-    sdi_frame_size = sdi_info->nr_sdi_lines *
-            (sdi_info->nr_hanc_symbols + sdi_info->nr_vanc_symbols) * 10 / 8;
-    context->avio_buffer_size = (sdi_frame_size + 7) & ~7; // align to 8-byte
+    // The sdi muxer needs an output, though it builds its frames in lend_room
+    context->avio_buffer_size = 4096;
     context->avio_buffer = av_malloc(context->avio_buffer_size);
     context->avio =
         avio_alloc_context(context->avio_buffer, context->avio_buffer_size, 1,
@@ -665,9 +685,6 @@ static int outpchannel_write_header(AVFormatContext *s)
         av_log(s, AV_LOG_ERROR, "Could not allocate avio context\n");
         return -1;
     }
-    // The sdi muxer hands over a whole frame at a time, so let it go straight to the
-    // channel instead of being copied through the buffer first.
-    context->avio->direct = 1;
     
     context->format_context = avformat_alloc_context();
     if (!context->format_context) {
@@ -707,6 +724,16 @@ static int outpchannel_write_header(AVFormatContext *s)
         return ret;
     av_dict_free(&options);
 
+    // The muxer builds each frame in the card's buffer, without a copy; its threads
+    // option gives its builder the threads, as the channel converts nothing.
+    ret = av_sdi_mux_set_sink(context->format_context, &(SdiFrameSink){
+                                  .opaque = context,
+                                  .acquire = lend_room,
+                                  .commit = send_frame,
+                              });
+    if (ret < 0)
+        return ret;
+
     return 1;
 }
 
@@ -733,6 +760,10 @@ static int outpchannel_write_packet(AVFormatContext *s, AVPacket *pkt)
             FFSWAP(uint8_t, pkt->data[i], pkt->data[i + 2]);
     }
 
+    // The sdi muxer may have set a stream's time base of its own, such as the audio's
+    // sample rate
+    av_packet_rescale_ts(pkt, s->streams[pkt->stream_index]->time_base,
+                         context->format_context->streams[pkt->stream_index]->time_base);
     av_write_frame(context->format_context, pkt);
     av_packet_unref(pkt);
 
@@ -752,6 +783,23 @@ static int outpchannel_write_packet(AVFormatContext *s, AVPacket *pkt)
         context->is_preloading = 0;
     }
 
+    // While frames are built in its buffer the channel fills in nothing: a frame that
+    // comes too late leaves the card without data, and the receiver loses the signal.
+    if (!context->is_preloading) {
+        int flags = 0;
+        int latched = 0;
+        result = DtOutpChannel_GetFlags(context->output, &flags, &latched);
+        if (result != DTAPI_OK) {
+            av_log(s, AV_LOG_ERROR, "Could not get flags from DtOutpChannel\n");
+            return -1;
+        }
+        if ((latched & DTAPI_TX_FIFO_UFL) != 0) {
+            TIMED_LOG(s, AV_LOG_WARNING, "The card ran out of frames to send\n");
+            context->total_underflows++;
+            DtOutpChannel_ClearFlags(context->output, latched);
+        }
+    }
+
     return 1;
 }
 
@@ -761,6 +809,7 @@ static int outpchannel_write_trailer(AVFormatContext *s)
     unsigned int result = 0;
 
     av_write_trailer(context->format_context);
+    av_log(s, AV_LOG_INFO, "Total underflows: %"PRId64"\n", context->total_underflows);
 
     // A stream shorter than the preload has not started going out yet.
     if (context->is_preloading) {
