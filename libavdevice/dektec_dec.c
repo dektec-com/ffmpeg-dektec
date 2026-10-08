@@ -179,15 +179,38 @@ static int interrupted(AVFormatContext *s)
     return cb->callback && cb->callback(cb->opaque);
 }
 
-static int read_packet(void *opaque, uint8_t *frame, int frame_size)
+// How long the sdi demuxer waits for a frame, in ms, before the device's loop looks at
+// the signal and the application again.
+#define LEND_TIMEOUT_MS 100
+
+// The sdi demuxer's input, which it never reads: it takes its frames from lend_frame.
+static int read_packet(void *opaque, uint8_t *buf, int buf_size)
+{
+    return AVERROR_EOF;
+}
+
+// Lends the sdi demuxer the next frame where the card wrote it, so that its parser reads
+// the frame in place.
+static int lend_frame(void *opaque, DtSdiView *view)
 {
     DekTecDemuxContext *context = (DekTecDemuxContext *)opaque;
-    int result = DtInpChannel_ReadFrame(context->input, frame, &frame_size, -1);
+    unsigned int result = DtInpChannel_AcquireFrame(context->input, view, LEND_TIMEOUT_MS,
+                                                    NULL);
+    if (result == DTAPI_E_TIMEOUT)
+        return AVERROR(EAGAIN);
     if (result != DTAPI_OK) {
-        av_log(context, AV_LOG_ERROR, "Could not read from DtInpChannel: %s\n", DtapiResult2Str(result));
-        return -1;
+        av_log(context, AV_LOG_ERROR, "Could not take a frame from DtInpChannel: %s\n",
+               DtapiResult2Str(result));
+        return AVERROR(EIO);
     }
-    return frame_size;
+    return 0;
+}
+
+// Gives the card back the frame lend_frame lent, once the parser is done with it.
+static void give_back_frame(void *opaque, DtSdiView *view)
+{
+    DekTecDemuxContext *context = (DekTecDemuxContext *)opaque;
+    DtInpChannel_ReleaseFrame(context->input, view);
 }
 
 #if HAVE_INTRINSICS_SSE2
@@ -434,10 +457,6 @@ static int inpchannel_read_header(AVFormatContext *s)
         return -1;
     }
 
-    ret = ff_dektec_give_input_threads(s, context->input, context->threads);
-    if (ret < 0)
-        return ret;
-
     if (strlen(context->option_standard) > 0)
         result = av_parse_standard_option(s, context->option_standard, &option);
     context->sdi_info = av_sdi_info(av_sdi_get_fmt(&option));
@@ -499,12 +518,6 @@ static int inpchannel_read_header(AVFormatContext *s)
         return -1;
     }
 
-    result = DtInpChannel_SetRxControl(context->input, DTAPI_RXCTRL_RCV);
-    if (result != DTAPI_OK) {
-        av_log(s, AV_LOG_ERROR, "Could not set RX control to RCV: %s\n", DtapiResult2Str(result));
-        return -1;
-    }
-
     max_fifo_size = 0;
     result = DtInpChannel_GetMaxFifoSize(context->input, &max_fifo_size);
     if (result != DTAPI_OK) {
@@ -513,10 +526,10 @@ static int inpchannel_read_header(AVFormatContext *s)
     }
     av_log(s, AV_LOG_DEBUG, "max_fifo_size=%d\n", max_fifo_size);
 
-    // Create avio context for device
+    // The sdi demuxer needs an input, though it takes its frames from lend_frame
     context->frame_size = context->sdi_info->nr_sdi_lines *
             (context->sdi_info->nr_hanc_symbols + context->sdi_info->nr_vanc_symbols) * 10 / 8;
-    context->avio_buffer_size = (context->frame_size + 7) & ~7;
+    context->avio_buffer_size = 4096;
     context->avio_buffer = av_malloc(context->avio_buffer_size);
     context->avio =
         avio_alloc_context(context->avio_buffer, context->avio_buffer_size, 0,
@@ -552,6 +565,25 @@ static int inpchannel_read_header(AVFormatContext *s)
         return -1;
     }
 
+    // The demuxer takes each frame apart where the card wrote it, without a copy; its
+    // threads option gives its parser the threads, as the channel converts nothing.
+    ret = av_sdi_demux_set_source(context->format_context, &(SdiFrameSource){
+                                      .opaque = context,
+                                      .acquire = lend_frame,
+                                      .release = give_back_frame,
+                                  });
+    if (ret < 0)
+        return ret;
+
+    // Receiving starts once the demuxer is ready to take the frames: a 2160p frame fills
+    // much of the card's buffer, which the time setting up the demuxer took would make
+    // overflow.
+    result = DtInpChannel_SetRxControl(context->input, DTAPI_RXCTRL_RCV);
+    if (result != DTAPI_OK) {
+        av_log(s, AV_LOG_ERROR, "Could not set RX control to RCV: %s\n", DtapiResult2Str(result));
+        return -1;
+    }
+
     // The frames carry the video and any audio from the first on: a few are enough to
     // find the streams, where FFmpeg's default of 5 seconds would keep that much in the
     // FIFO as latency.
@@ -577,7 +609,6 @@ static int inpchannel_read_header(AVFormatContext *s)
 static int inpchannel_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
     DekTecDemuxContext *context = (DekTecDemuxContext *)s->priv_data;
-    int fifo_load = 0;
     int flags = 0;
     int latched = 0;
     unsigned int result = 0;
@@ -588,30 +619,12 @@ static int inpchannel_read_packet(AVFormatContext *s, AVPacket *pkt)
     for (;;) {
         int has_packet = 0;
 
-        result = DtInpChannel_DetectIoStd(context->input, &value, &sub_value);
-        if (result == DTAPI_E_INVALID_VIDSTD && context->has_signal) {
-            TIMED_LOG(s, AV_LOG_WARNING, "SDI signal lost\n");
-            context->has_signal = 0;
-            context->signal_lost_ts = av_gettime();
-        }
-        else if (result != DTAPI_E_INVALID_VIDSTD && !context->has_signal) {
-            TIMED_LOG(s, AV_LOG_WARNING,
-                      "SDI signal re-acquired after %" PRId64 "ms\n",
-                      (av_gettime() - context->signal_lost_ts) / 1000);
-            context->has_signal = 1;
-        }
-
         if (context->has_signal) {
-            result = DtInpChannel_GetFifoLoad(context->input, &fifo_load);
-            if (result != DTAPI_OK) {
-                av_log(s, AV_LOG_ERROR, "Could not get fifo load from DtInpChannel\n");
-                return AVERROR(EIO);
-            }
-
-            if (fifo_load >= context->avio_buffer_size) {
-                ret = av_read_frame(context->format_context, pkt);
-                if (ret < 0)
-                    return ret;
+            // The demuxer waits a moment for a frame, and gives EAGAIN when none came
+            ret = av_read_frame(context->format_context, pkt);
+            if (ret < 0 && ret != AVERROR(EAGAIN))
+                return ret;
+            if (ret == 0) {
                 has_packet = 1;
                 if (context->frame_count == 0 && context->timestamp_align) {
                     AVRational remainder = av_make_q(av_gettime() % context->timestamp_align, 1000000);
@@ -640,15 +653,35 @@ static int inpchannel_read_packet(AVFormatContext *s, AVPacket *pkt)
                 av_log(s, AV_LOG_ERROR, "Could not clear flags for DtInpChannel\n");
                 return AVERROR(EIO);
             }
+            // A frame that arrived shows the signal is there; the detection, which opens
+            // the port's receiver anew, would only disturb it
+            if (ret == 0) {
+                if (has_packet)
+                    return 0;
+                continue;
+            }
         }
 
-        if (has_packet)
-            return 0;
+        // No frame came in time: see whether the signal is still there
+        result = DtInpChannel_DetectIoStd(context->input, &value, &sub_value);
+        if (result == DTAPI_E_INVALID_VIDSTD && context->has_signal) {
+            TIMED_LOG(s, AV_LOG_WARNING, "SDI signal lost\n");
+            context->has_signal = 0;
+            context->signal_lost_ts = av_gettime();
+        }
+        else if (result != DTAPI_E_INVALID_VIDSTD && !context->has_signal) {
+            TIMED_LOG(s, AV_LOG_WARNING,
+                      "SDI signal re-acquired after %" PRId64 "ms\n",
+                      (av_gettime() - context->signal_lost_ts) / 1000);
+            context->has_signal = 1;
+        }
+
         if (s->flags & AVFMT_FLAG_NONBLOCK)
             return AVERROR(EAGAIN);
         if (interrupted(s))
             return AVERROR_EXIT;
-        av_usleep(context->has_signal ? 1000 : 5000);
+        if (!context->has_signal)
+            av_usleep(5000);
     }
 }
 
