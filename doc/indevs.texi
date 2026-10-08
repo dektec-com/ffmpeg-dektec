@@ -482,6 +482,10 @@ stream (@var{stream_specifier} is 'a'). With @option{nmos_registry}, the URL
 @samp{nmos} gives a stream whose address an NMOS controller sets: the input
 waits until the controller connects it, see @option{nmos_wait}.
 
+@item pt
+Specify the RTP payload type of the received streams. Default is 96. Allowed
+range is from 96 to 127.
+
 @item nmos_registry
 Register the SMPTE 2110 streams with an NMOS registry, so that an NMOS
 controller can connect them over IS-05. Give the base URL of the registry's
@@ -542,6 +546,12 @@ deduced from the video input parameters.
 @item signal_timeout
 Set how long to wait for a signal on an SDI port before giving up. Default is
 5 seconds; a negative value, such as -1, waits without a limit.
+
+@item timestamp_align
+Start capturing from an SDI port at a multiple of this duration of the wall
+clock: frames are dropped until one arrives within a frame time after such a
+multiple. This lets inputs on several ports or hosts with synchronized clocks
+start at the same frame. Default is 0, which starts at the first frame.
 
 @item threads
 Set how many threads an SDI frame is converted over. Converting a 2160p frame is

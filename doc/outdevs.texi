@@ -313,6 +313,11 @@ Force 10-bit video output.
 Automatic pixel format conversion is done to get the right pixel format for the
 hardware.
 
+@item sdi_standard
+Force a specific SDI standard, e.g. @samp{SD576i}, @samp{HD1080i},
+@samp{3G1080p} or @samp{12G2160p}. Otherwise the standard will automatically be
+deduced from the video stream.
+
 @item threads
 Set how many threads an SDI frame is coded over. Converting a 2160p frame is
 more than one slow core has time for at 50 or 60 frames a second. The values
@@ -397,12 +402,6 @@ Send a test pattern with a DTA-2110 as an NMOS sender:
 @example
 ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=25 -c:v wrapped_avframe -pix_fmt uyvy422 -f dektec -url:v 239.100.9.5:5004 -nmos_registry http://registry.local 2110000076:1
 @end example
-
-@end itemize
-
-@subsection Examples
-
-@itemize
 
 @item
 Playout an MPEG transport stream via a DTA-2110 (port 1):
