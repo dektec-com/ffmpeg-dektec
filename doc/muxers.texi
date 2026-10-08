@@ -3336,6 +3336,72 @@ ffmpeg -f lavfi -i "movie=INPUT.mkv[out+subcc]" -map 0:s:0 -c:s copy -f rcwt CC.
 @end example
 @end itemize
 
+@anchor{sdi}
+@section sdi
+
+DekTec SDI file muxer.
+
+It writes a video stream, and optionally an audio stream, as uncompressed SDI
+frames: every line with its ancillary data, in 10-bit words packed together,
+as DekTec's cards send and receive them. By default the file starts with a
+header that names the SDI standard, and the frame count when the output is
+seekable. The @code{dektec} output device uses this muxer to make its SDI
+frames.
+
+The video stream is coded with @code{wrapped_avframe}. Frames that are not
+@code{yuv422p10le} at the picture size of the standard are scaled and
+converted to it; the largest input is 3840x2160. An interlaced standard needs
+top field first video, e.g. with the @code{setfield=tff} filter.
+
+The audio stream is @code{pcm_s24le} or @code{pcm_s32le} at 48 kHz, and is
+embedded in the horizontal ancillary data: up to 4 channels for SD-SDI, and up
+to 16 for the other standards.
+
+@subsection Options
+
+@table @option
+
+@item sdi_standard
+Force a specific SDI standard. It is the link rate, @samp{SD}, @samp{HD},
+@samp{3G} (or @samp{3GA}, @samp{3GB}), @samp{6G} or @samp{12G}, followed by
+the number of lines, @samp{480}, @samp{576}, @samp{720}, @samp{1080} or
+@samp{2160}, and the scanning, @samp{i}, @samp{p} or @samp{psf}, e.g.
+@samp{SD576i}, @samp{HD720p}, @samp{3G1080p} or @samp{12G2160p}. The frame
+rate comes from the video stream. Otherwise the standard is deduced from the
+video stream.
+
+@item sdi_nr_audio
+Set the number of audio channels embedded in the SDI frames. Default is -1,
+the number of channels of the audio stream. Allowed range is from 1 to 16.
+
+@item calc_crc @var{bool}
+Calculate the CRC of each line. Default is enabled. Disabling it makes the
+muxer faster; the @code{dektec} output device disables it, because the card
+calculates the CRCs.
+
+@item no_header @var{bool}
+Do not write the file header, so that the output is SDI frames only. Default
+is disabled. A file without a header can only be read back with the
+@code{sdi} demuxer's @option{no_header} and @option{sdi_standard}.
+
+@end table
+
+@subsection Examples
+
+@itemize
+@item
+Write a second of 576i50 test pattern to an SDI file:
+@example
+ffmpeg -f lavfi -i testsrc=size=720x576:rate=25 -vf setfield=tff -t 1 -pix_fmt yuv422p10le -f sdi -sdi_standard SD576i out.sdi
+@end example
+
+@item
+Write a video file with its audio as stereo to an SDI file:
+@example
+ffmpeg -i input.mxf -c:v wrapped_avframe -c:a pcm_s24le -ar 48000 -ac 2 out.sdi
+@end example
+@end itemize
+
 @anchor{segment}
 @section segment, stream_segment, ssegment
 
