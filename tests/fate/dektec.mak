@@ -16,6 +16,15 @@ DEKTEC_SRC_T = -f lavfi -i testsrc=s=$(1):r=$(2) -f lavfi -i sine=r=48000 -t $(4
 DEKTEC_SRC = $(call DEKTEC_SRC_T,$(1),$(2),$(3),0.4)
 DEKTEC_SRC_4K = $(call DEKTEC_SRC_T,$(1),$(2),$(3),0.1)
 
+# A still source for the 4K input tests: SMPTE bars of size $(1) at $(2) frames per
+# second, and a 750 Hz sine, which makes whole periods in a frame at 30 and 50 frames
+# per second. Every frame is the same, so that the test holds when the emulated port
+# drops frames, as it may while ffmpeg sets up its output: a 2160p frame fills much of
+# the port's buffer.
+DEKTEC_SRC_STILL_4K = -f lavfi -i smptehdbars=s=$(1):r=$(2) -f lavfi -i sine=r=48000:f=750 \
+                      -t 0.1 -vf $(3) -af aresample,aformat=sample_fmts=s32 \
+                      -c:a pcm_s24le -flags +bitexact -fflags +bitexact
+
 FATE_DEKTEC_OUT += fate-dektec-sdi-out-576i50
 fate-dektec-sdi-out-576i50: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,720x576,25,$(DEKTEC_VF_I))
 fate-dektec-sdi-out-576i50: CMP = oneline
@@ -53,13 +62,13 @@ FATE_DEKTEC_IN += fate-dektec-sdi-in-1080i50
 fate-dektec-sdi-in-1080i50: CMD = dektec_sdi_in 1080I50 10 $(call DEKTEC_SRC,1920x1080,25,$(DEKTEC_VF_I))
 
 FATE_DEKTEC_IN += fate-dektec-sdi-in-2160p30
-fate-dektec-sdi-in-2160p30: CMD = dektec_sdi_in 2160P30 3 $(call DEKTEC_SRC_4K,3840x2160,30,$(DEKTEC_VF_P))
+fate-dektec-sdi-in-2160p30: CMD = dektec_sdi_in 2160P30 3 $(call DEKTEC_SRC_STILL_4K,3840x2160,30,$(DEKTEC_VF_P))
 
 FATE_DEKTEC_IN += fate-dektec-sdi-in-2160p50
-fate-dektec-sdi-in-2160p50: CMD = dektec_sdi_in 2160P50 5 $(call DEKTEC_SRC_4K,3840x2160,50,$(DEKTEC_VF_P))
+fate-dektec-sdi-in-2160p50: CMD = dektec_sdi_in 2160P50 5 $(call DEKTEC_SRC_STILL_4K,3840x2160,50,$(DEKTEC_VF_P))
 
-DEKTEC_SRC_DEPS = LAVFI_INDEV TESTSRC_FILTER SINE_FILTER SETFIELD_FILTER SCALE_FILTER \
-                  FORMAT_FILTER ARESAMPLE_FILTER AFORMAT_FILTER \
+DEKTEC_SRC_DEPS = LAVFI_INDEV TESTSRC_FILTER SMPTEHDBARS_FILTER SINE_FILTER \
+                  SETFIELD_FILTER SCALE_FILTER FORMAT_FILTER ARESAMPLE_FILTER AFORMAT_FILTER \
                   WRAPPED_AVFRAME_ENCODER PCM_S24LE_ENCODER
 
 FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_OUT)
