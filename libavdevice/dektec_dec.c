@@ -544,6 +544,7 @@ static int inpchannel_read_header(AVFormatContext *s)
     standard = av_asprintf("%s%d%s%s", type, lines, method, rate);
     av_dict_set(&options, "no_header", "1", 0);
     av_dict_set(&options, "sdi_standard", standard, 0);
+    av_dict_set_int(&options, "threads", context->threads, 0);
     av_free(standard);
     result = avformat_open_input(&context->format_context, NULL, NULL, &options);
     if (result != 0) {

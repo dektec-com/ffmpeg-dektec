@@ -35,6 +35,8 @@
 #include "libavutil/fifo.h"
 #include "libavutil/rational.h"
 
+#include "cdtapi.h"
+
 /*
  * Types, used in .sdi file header
  */
@@ -327,6 +329,27 @@ typedef struct StandardOption {
 int av_parse_standard_option(AVFormatContext *s, const char *arg, StandardOption *option);
 SdiFormat av_sdi_get_fmt(StandardOption *option);
 SdiFormat av_find_matching_standard(AVFormatContext *s, StandardOption *option, AVStream *stream);
+
+/**
+ * Return the DTAPI_VIDSTD_ code of a standard of the table, by which CDTAPI's parser
+ * and builder know it.
+ */
+int av_sdi_vidstd(const struct SdiInfo *info);
+
+/*
+ * The threads option of the sdi muxer and demuxer. Auto, the default, starts
+ * FF_SDI_AUTO_THREADS threads and lets CDTAPI divide a frame as its standard calls for;
+ * 1 converts a frame in the calling thread; more start that many threads.
+ */
+#define FF_SDI_THREADS_AUTO 0
+#define FF_SDI_AUTO_THREADS 4
+
+/**
+ * Start the worker pool that the threads option asks for. Sets *pool to NULL when the
+ * option asks for one thread, and *num_threads to the threads a frame is divided over,
+ * 0 for as many as its standard calls for.
+ */
+int ff_sdi_worker_pool(void *log_ctx, int threads, DtWorkerPool **pool, int *num_threads);
 
 /**
  * Return lowest 9 bits of value, set bit 9 to not bit 8.

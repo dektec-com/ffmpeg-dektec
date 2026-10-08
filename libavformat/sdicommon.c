@@ -146,6 +146,75 @@ static const struct SdiInfo sdi_table[SDI_FMT_NB] = {
     [SDI_FMT_2160P60]      = {"2160p60",      0xCE, SDI_P_PICT_P_TR, SDI_R_60,    SDI_AR_16_9, 3840, 2160, 1125, 2240, 2 * 7680, 1,  -1,  1125, -1,   42, -1,  1121, -1,   7,  -1,   10, -1,  -1, -1},
 };
 
+/*
+ * The DTAPI_VIDSTD_ code of each standard of the table above.
+ */
+static const int sdi_vidstd_table[SDI_FMT_NB] = {
+    [SDI_FMT_625I50]       = DTAPI_VIDSTD_625I50,
+    [SDI_FMT_525I59_94]    = DTAPI_VIDSTD_525I59_94,
+    [SDI_FMT_720P23_98]    = DTAPI_VIDSTD_720P23_98,
+    [SDI_FMT_720P24]       = DTAPI_VIDSTD_720P24,
+    [SDI_FMT_720P25]       = DTAPI_VIDSTD_720P25,
+    [SDI_FMT_720P29_97]    = DTAPI_VIDSTD_720P29_97,
+    [SDI_FMT_720P30]       = DTAPI_VIDSTD_720P30,
+    [SDI_FMT_720P50]       = DTAPI_VIDSTD_720P50,
+    [SDI_FMT_720P59_94]    = DTAPI_VIDSTD_720P59_94,
+    [SDI_FMT_720P60]       = DTAPI_VIDSTD_720P60,
+    [SDI_FMT_1080P23_98]   = DTAPI_VIDSTD_1080P23_98,
+    [SDI_FMT_1080P24]      = DTAPI_VIDSTD_1080P24,
+    [SDI_FMT_1080P25]      = DTAPI_VIDSTD_1080P25,
+    [SDI_FMT_1080P29_97]   = DTAPI_VIDSTD_1080P29_97,
+    [SDI_FMT_1080P30]      = DTAPI_VIDSTD_1080P30,
+    [SDI_FMT_1080I50]      = DTAPI_VIDSTD_1080I50,
+    [SDI_FMT_1080I59_94]   = DTAPI_VIDSTD_1080I59_94,
+    [SDI_FMT_1080I60]      = DTAPI_VIDSTD_1080I60,
+    [SDI_FMT_1080PSF23_98] = DTAPI_VIDSTD_1080PSF23_98,
+    [SDI_FMT_1080PSF24]    = DTAPI_VIDSTD_1080PSF24,
+    [SDI_FMT_1080PSF25]    = DTAPI_VIDSTD_1080PSF25,
+    [SDI_FMT_1080PSF29_97] = DTAPI_VIDSTD_1080PSF29_97,
+    [SDI_FMT_1080PSF30]    = DTAPI_VIDSTD_1080PSF30,
+    [SDI_FMT_1080P50]      = DTAPI_VIDSTD_1080P50,
+    [SDI_FMT_1080P59_94]   = DTAPI_VIDSTD_1080P59_94,
+    [SDI_FMT_1080P60]      = DTAPI_VIDSTD_1080P60,
+    [SDI_FMT_2160P23_98]   = DTAPI_VIDSTD_2160P23_98,
+    [SDI_FMT_2160P24]      = DTAPI_VIDSTD_2160P24,
+    [SDI_FMT_2160P25]      = DTAPI_VIDSTD_2160P25,
+    [SDI_FMT_2160P29_97]   = DTAPI_VIDSTD_2160P29_97,
+    [SDI_FMT_2160P30]      = DTAPI_VIDSTD_2160P30,
+    [SDI_FMT_2160P50]      = DTAPI_VIDSTD_2160P50,
+    [SDI_FMT_2160P59_94]   = DTAPI_VIDSTD_2160P59_94,
+    [SDI_FMT_2160P60]      = DTAPI_VIDSTD_2160P60,
+};
+
+int av_sdi_vidstd(const struct SdiInfo *info)
+{
+    return sdi_vidstd_table[info - sdi_table];
+}
+
+int ff_sdi_worker_pool(void *log_ctx, int threads, DtWorkerPool **pool, int *num_threads)
+{
+    int pool_threads = threads == FF_SDI_THREADS_AUTO ? FF_SDI_AUTO_THREADS : threads;
+    DtapiResult result;
+
+    *pool = NULL;
+    *num_threads = 0;
+    if (pool_threads < 2)
+        return 0;
+
+    *pool = DtWorkerPool_Alloc();
+    if (!*pool)
+        return AVERROR(ENOMEM);
+    result = DtWorkerPool_StartThreads(*pool, pool_threads);
+    if (result != DTAPI_OK) {
+        av_log(log_ctx, AV_LOG_ERROR, "Could not start %d threads: %s\n", pool_threads,
+               DtapiResult2Str(result));
+        DtWorkerPool_Freep(pool);
+        return AVERROR(ENOMEM);
+    }
+    *num_threads = threads == FF_SDI_THREADS_AUTO ? 0 : threads;
+    return 0;
+}
+
 const struct SdiInfo *av_sdi_info(SdiFormat sdi_fmt)
 {
     if (sdi_fmt < 0 || sdi_fmt >= SDI_FMT_NB)

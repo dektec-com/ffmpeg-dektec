@@ -3997,8 +3997,9 @@ rtsp_demuxer_select="http_protocol rtpdec"
 rtsp_muxer_select="rtp_muxer http_protocol rtp_protocol rtpenc_chain"
 sap_demuxer_select="sdp_demuxer"
 sap_muxer_select="rtp_muxer rtp_protocol rtpenc_chain"
+sdi_demuxer_deps="libcdtapi"
 sdi_demuxer_select="wrapped_avframe_decoder"
-sdi_muxer_deps="swscale"
+sdi_muxer_deps="libcdtapi swscale"
 sdi_muxer_select="wrapped_avframe_encoder"
 sdp_demuxer_select="rtpdec"
 smoothstreaming_muxer_select="ismv_muxer"
@@ -7342,7 +7343,7 @@ enabled libass            && require_pkg_config libass "libass >= 0.11.0" ass/as
 enabled libbluray         && require_pkg_config libbluray libbluray libbluray/bluray.h bd_open
 enabled libbs2b           && require_pkg_config libbs2b libbs2b bs2b.h bs2b_open
 enabled libcaca           && require_pkg_config libcaca caca caca.h caca_create_canvas
-enabled libcdtapi         && require_pkg_config libcdtapi "cdtapi >= 6.14.7" cdtapi.h DtapiGetVersion
+enabled libcdtapi         && require_pkg_config libcdtapi "cdtapi >= 6.14.9" cdtapi.h DtapiGetVersion
 enabled libcdtapi_nmos    && require_pkg_config libcdtapi_nmos "cdtapi >= 6.14.8 dtnmos >= 0.5.2" cdtapi_nmos.h DtNmosAvFifo_AddDevice
 enabled libcodec2         && require libcodec2 codec2/codec2.h codec2_create -lcodec2
 enabled libdav1d          && require_pkg_config libdav1d "dav1d >= 1.0.0" "dav1d/dav1d.h" dav1d_version

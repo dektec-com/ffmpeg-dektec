@@ -1136,6 +1136,14 @@ It reads the uncompressed SDI frames that the @code{sdi} muxer writes; the
 a video stream in @code{yuv422p10}, coded with @code{wrapped_avframe}, and an audio stream in
 @code{pcm_s24le} as soon as a frame carries embedded audio.
 
+CDTAPI's SDI parser takes the frames apart, so the demuxer needs FFmpeg
+configured with @code{--enable-libcdtapi}. The audio stream has as many
+channels as the first frame with audio carries, up to the last channel with
+valid audio, of at most 16. A transmitter marks the channels of an audio group
+that carry no audio as not valid, so they do not count. When later frames carry
+another number of channels, the stream keeps its own: a missing channel is
+silent, and a channel beyond is left out.
+
 @subsection Options
 
 @table @option
@@ -1148,6 +1156,12 @@ read from the header.
 @item sdi_standard
 Set the SDI standard of a file without a header, in the form of the
 @code{sdi} muxer's @option{sdi_standard}, e.g. @samp{HD1080i}.
+
+@item threads
+Set the number of threads a frame's image is taken apart over. @samp{auto},
+the default, starts 4 threads and divides a frame as its standard calls for;
+1 takes it apart in the reading thread. The audio is always read in the
+reading thread.
 
 @end table
 
