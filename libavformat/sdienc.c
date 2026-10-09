@@ -328,6 +328,10 @@ static int sdi_init(AVFormatContext *s)
         return AVERROR(EINVAL);
     }
     sdi->sdi_info = sdi_info = av_sdi_info(standard);
+    if (av_sdi_is_level_b(sdi_info)) {
+        av_log(s, AV_LOG_ERROR, "The sdi format does not take 3G level B yet\n");
+        return AVERROR_PATCHWELCOME;
+    }
     sdi->vidstd = av_sdi_vidstd(sdi_info);
 
     av_log(s, AV_LOG_DEBUG, "SDI standard: %s\n", sdi_info->name);

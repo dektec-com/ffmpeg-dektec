@@ -632,7 +632,7 @@ static int outpchannel_write_header(AVFormatContext *s)
     sdi_info = av_sdi_info(standard);
     av_log(s, AV_LOG_DEBUG, "SDI standard: %s\n", sdi_info->name);
 
-    vid_std = ff_dektec_get_vidstd(standard);
+    vid_std = av_sdi_vidstd(sdi_info);
     av_log(s, AV_LOG_DEBUG, "vid_std=%d\n", vid_std);
 
     result = DtapiVidStd2IoStd(vid_std, ff_dektec_get_linkstd(standard), &io_standard,

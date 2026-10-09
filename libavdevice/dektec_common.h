@@ -45,9 +45,7 @@ enum SdiFormat;
 int ff_get_hw_funcs(struct DtHwFuncDesc **hw_funcs, int *count);
 int ff_dektec_list_devices(struct AVDeviceInfoList *device_list);
 
-int ff_dektec_get_vidstd(enum SdiFormat sdi_fmt);
 int ff_dektec_get_linkstd(enum SdiFormat sdi_fmt);
-const struct SdiInfo *ff_dektec_get_sdi_info(int vid_std); 
 
 int ff_dektec_parse_url(void *ctx, char *url_arg, int pt_arg,
                         struct AvFifo_IpPars *ippars);

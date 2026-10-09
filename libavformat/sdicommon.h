@@ -218,6 +218,12 @@ typedef enum SdiFormat {
     SDI_FMT_1080P59_94,
     SDI_FMT_1080P60,
 
+    // 3G level B, dual link: chosen only when asked for, by 3GB in -sdi_standard, a
+    // card that detects it or a file whose header says so
+    SDI_FMT_1080P50B,
+    SDI_FMT_1080P59_94B,
+    SDI_FMT_1080P60B,
+
     SDI_FMT_2160P23_98,
     SDI_FMT_2160P24,
     SDI_FMT_2160P25,
@@ -300,6 +306,7 @@ extern const int SDI_FILE_SIGNATURE;            // Magic for SDI files
 typedef struct StandardOption {
     int links;
     int standard;
+    SdiLevel level;     // of 3G: SDI_LEVEL_B_DL for 3GB, SDI_LEVEL_A for 3GA and 3G
     int lines;
     int scanning_mode;
     SdiPictureRate frame_rate;
@@ -314,6 +321,17 @@ SdiFormat av_find_matching_standard(AVFormatContext *s, StandardOption *option, 
  * and builder know it.
  */
 int av_sdi_vidstd(const struct SdiInfo *info);
+
+/**
+ * Return the standard of the table with a DTAPI_VIDSTD_ code, or NULL for a code that
+ * has none.
+ */
+const struct SdiInfo *av_sdi_info_by_vidstd(int vidstd);
+
+/**
+ * Return 1 if a standard of the table is 3G level B, otherwise 0.
+ */
+int av_sdi_is_level_b(const struct SdiInfo *info);
 
 /**
  * Return lowest 9 bits of value, set bit 9 to not bit 8.
@@ -340,9 +358,10 @@ int ff_has_sub_images(uint32_t format);
  */
 int ff_sdi_get_nr_channels(uint32_t format);
 /**
- * 
+ * Return the payload ID's first byte of a link rate, level and number of lines, or -1
+ * for a combination that has none. The level matters only for 3G.
  */
-int ff_get_sdi_format(int sdi_line_rate, int lines);
+int ff_get_sdi_format(int sdi_line_rate, SdiLevel level, int lines);
 /**
  * 
  */

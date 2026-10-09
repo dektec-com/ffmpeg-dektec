@@ -36,43 +36,6 @@
 #include "cdtapi.h"
 #include "cdtapi_avfifo.h"
 
-static const int sdi_fmt_to_vidstd[SDI_FMT_NB] = {
-    [SDI_FMT_625I50] = DTAPI_VIDSTD_625I50,
-    [SDI_FMT_525I59_94] = DTAPI_VIDSTD_525I59_94,
-    [SDI_FMT_720P23_98] = DTAPI_VIDSTD_720P23_98,
-    [SDI_FMT_720P24] = DTAPI_VIDSTD_720P24,
-    [SDI_FMT_720P25] = DTAPI_VIDSTD_720P25,
-    [SDI_FMT_720P29_97] = DTAPI_VIDSTD_720P29_97,
-    [SDI_FMT_720P30] = DTAPI_VIDSTD_720P30,
-    [SDI_FMT_720P50] = DTAPI_VIDSTD_720P50,
-    [SDI_FMT_720P59_94] = DTAPI_VIDSTD_720P59_94,
-    [SDI_FMT_720P60] = DTAPI_VIDSTD_720P60,
-    [SDI_FMT_1080P23_98] = DTAPI_VIDSTD_1080P23_98,
-    [SDI_FMT_1080P24] = DTAPI_VIDSTD_1080P24,
-    [SDI_FMT_1080P25] = DTAPI_VIDSTD_1080P25,
-    [SDI_FMT_1080P29_97] = DTAPI_VIDSTD_1080P29_97,
-    [SDI_FMT_1080P30] = DTAPI_VIDSTD_1080P30,
-    [SDI_FMT_1080I50] = DTAPI_VIDSTD_1080I50,
-    [SDI_FMT_1080I59_94] = DTAPI_VIDSTD_1080I59_94,
-    [SDI_FMT_1080I60] = DTAPI_VIDSTD_1080I60,
-    [SDI_FMT_1080PSF23_98] = DTAPI_VIDSTD_1080PSF23_98,
-    [SDI_FMT_1080PSF24] = DTAPI_VIDSTD_1080PSF24,
-    [SDI_FMT_1080PSF25] = DTAPI_VIDSTD_1080PSF25,
-    [SDI_FMT_1080PSF29_97] = DTAPI_VIDSTD_1080PSF29_97,
-    [SDI_FMT_1080PSF30] = DTAPI_VIDSTD_1080PSF30,
-    [SDI_FMT_1080P50] = DTAPI_VIDSTD_1080P50,
-    [SDI_FMT_1080P59_94] = DTAPI_VIDSTD_1080P59_94,
-    [SDI_FMT_1080P60] = DTAPI_VIDSTD_1080P60,
-    [SDI_FMT_2160P23_98] = DTAPI_VIDSTD_2160P23_98,
-    [SDI_FMT_2160P24] = DTAPI_VIDSTD_2160P24,
-    [SDI_FMT_2160P25] = DTAPI_VIDSTD_2160P25,
-    [SDI_FMT_2160P29_97] = DTAPI_VIDSTD_2160P29_97,
-    [SDI_FMT_2160P30] = DTAPI_VIDSTD_2160P30,
-    [SDI_FMT_2160P50] = DTAPI_VIDSTD_2160P50,
-    [SDI_FMT_2160P59_94] = DTAPI_VIDSTD_2160P59_94,
-    [SDI_FMT_2160P60] = DTAPI_VIDSTD_2160P60,
-};
-
 int ff_get_hw_funcs(DtHwFuncDesc **hw_funcs, int *count)
 {
     int n_elements_out = 0;
@@ -120,13 +83,6 @@ int ff_dektec_list_devices(struct AVDeviceInfoList *device_list)
     return 1;
 }
 
-int ff_dektec_get_vidstd(SdiFormat sdi_fmt)
-{
-    if (sdi_fmt < 0 || sdi_fmt >= SDI_FMT_NB)
-        return DTAPI_VIDSTD_UNKNOWN;
-    return sdi_fmt_to_vidstd[sdi_fmt];
-}
-
 /*
  * How 4K is carried, as DtapiVidStd2IoStd takes it: 2 is one 6G link and 3 is one 12G
  * link, which the payload format tells apart, 0xc0 being 6G and 0xce 12G. A standard
@@ -142,15 +98,6 @@ int ff_dektec_get_linkstd(SdiFormat sdi_fmt)
     if (info->payload_format != 0xc0 && info->payload_format != 0xce)
         return -1;
     return info->payload_format == 0xce ? 3 : 2;
-}
-
-const struct SdiInfo *ff_dektec_get_sdi_info(int vid_std)
-{
-    for (SdiFormat sdi_fmt = 0; sdi_fmt < SDI_FMT_NB; sdi_fmt++) {
-        if (sdi_fmt_to_vidstd[sdi_fmt] == vid_std)
-            return av_sdi_info(sdi_fmt);
-    }
-    return NULL;
 }
 
 int ff_dektec_parse_url(void *ctx, char *url_arg, int pt_arg,

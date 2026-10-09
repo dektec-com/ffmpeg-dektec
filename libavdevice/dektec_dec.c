@@ -520,7 +520,7 @@ static int inpchannel_read_header(AVFormatContext *s)
         result = av_parse_standard_option(s, context->option_standard, &option);
     context->sdi_info = av_sdi_info(av_sdi_get_fmt(&option));
     if (!context->sdi_info)
-        context->sdi_info = ff_dektec_get_sdi_info(context->detected_standard.VidStd);
+        context->sdi_info = av_sdi_info_by_vidstd(context->detected_standard.VidStd);
     if (!context->sdi_info) {
         av_log(s, AV_LOG_ERROR, "No SDI standard found\n");
         return -1;

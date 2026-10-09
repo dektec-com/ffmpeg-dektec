@@ -133,6 +133,12 @@ static const struct SdiInfo sdi_table[SDI_FMT_NB] = {
     [SDI_FMT_1080P59_94]   = {"1080p59.94",   0x89, SDI_P_PICT_P_TR, SDI_R_59_94, SDI_AR_16_9, 1920, 1080, 1125, 560,  2 * 1920, 1,  -1,  1125, -1,   42, -1,  1121, -1,   7,  -1,  10, -1,  -1, -1},
     [SDI_FMT_1080P60]      = {"1080p60",      0x89, SDI_P_PICT_P_TR, SDI_R_60,    SDI_AR_16_9, 1920, 1080, 1125, 560,  2 * 1920, 1,  -1,  1125, -1,   42, -1,  1121, -1,   7,  -1,  10, -1,  -1, -1},
 
+    // Each picture of 3G level B in the layout of level A, as CDTAPI's builder and
+    // parser take it
+    [SDI_FMT_1080P50B]     = {"1080p50 level B",    0x8A, SDI_P_PICT_P_TR, SDI_R_50,    SDI_AR_16_9, 1920, 1080, 1125, 1440, 2 * 1920, 1,  -1,  1125, -1,   42, -1,  1121, -1,   7,  -1,  10, -1,  -1, -1},
+    [SDI_FMT_1080P59_94B]  = {"1080p59.94 level B", 0x8A, SDI_P_PICT_P_TR, SDI_R_59_94, SDI_AR_16_9, 1920, 1080, 1125, 560,  2 * 1920, 1,  -1,  1125, -1,   42, -1,  1121, -1,   7,  -1,  10, -1,  -1, -1},
+    [SDI_FMT_1080P60B]     = {"1080p60 level B",    0x8A, SDI_P_PICT_P_TR, SDI_R_60,    SDI_AR_16_9, 1920, 1080, 1125, 560,  2 * 1920, 1,  -1,  1125, -1,   42, -1,  1121, -1,   7,  -1,  10, -1,  -1, -1},
+
     [SDI_FMT_2160P23_98]   = {"2160p23.98",   0xC0, SDI_P_PICT_P_TR, SDI_R_23_98, SDI_AR_16_9, 3840, 2160, 1125, 6640, 2 * 7680, 1,  -1,  1125, -1,   42, -1,  1121, -1,   7,  -1,   10, -1,  -1, -1},
     [SDI_FMT_2160P24]      = {"2160p24",      0xC0, SDI_P_PICT_P_TR, SDI_R_24,    SDI_AR_16_9, 3840, 2160, 1125, 6640, 2 * 7680, 1,  -1,  1125, -1,   42, -1,  1121, -1,   7,  -1,   10, -1,  -1, -1},
     [SDI_FMT_2160P25]      = {"2160p25",      0xC0, SDI_P_PICT_P_TR, SDI_R_25,    SDI_AR_16_9, 3840, 2160, 1125, 5760, 2 * 7680, 1,  -1,  1125, -1,   42, -1,  1121, -1,   7,  -1,   10, -1,  -1, -1},
@@ -174,6 +180,9 @@ static const int sdi_vidstd_table[SDI_FMT_NB] = {
     [SDI_FMT_1080P50]      = DTAPI_VIDSTD_1080P50,
     [SDI_FMT_1080P59_94]   = DTAPI_VIDSTD_1080P59_94,
     [SDI_FMT_1080P60]      = DTAPI_VIDSTD_1080P60,
+    [SDI_FMT_1080P50B]     = DTAPI_VIDSTD_1080P50B,
+    [SDI_FMT_1080P59_94B]  = DTAPI_VIDSTD_1080P59_94B,
+    [SDI_FMT_1080P60B]     = DTAPI_VIDSTD_1080P60B,
     [SDI_FMT_2160P23_98]   = DTAPI_VIDSTD_2160P23_98,
     [SDI_FMT_2160P24]      = DTAPI_VIDSTD_2160P24,
     [SDI_FMT_2160P25]      = DTAPI_VIDSTD_2160P25,
@@ -187,6 +196,20 @@ static const int sdi_vidstd_table[SDI_FMT_NB] = {
 int av_sdi_vidstd(const struct SdiInfo *info)
 {
     return sdi_vidstd_table[info - sdi_table];
+}
+
+const struct SdiInfo *av_sdi_info_by_vidstd(int vidstd)
+{
+    for (SdiFormat sdi_fmt = 0; sdi_fmt < SDI_FMT_NB; sdi_fmt++) {
+        if (sdi_vidstd_table[sdi_fmt] == vidstd)
+            return &sdi_table[sdi_fmt];
+    }
+    return NULL;
+}
+
+int av_sdi_is_level_b(const struct SdiInfo *info)
+{
+    return info->payload_format == 0x8A;
 }
 
 const struct SdiInfo *av_sdi_info(SdiFormat sdi_fmt)
@@ -244,7 +267,7 @@ static int parse_links(const char **arg)
     return 1;
 }
 
-static int parse_standard(const char **arg)
+static int parse_standard(const char **arg, SdiLevel *level)
 {
     const char *sd, *ed, *hd, *_3_ga, *_3_gb, *_3_g, *_6_g, *_12_g, *_24_g;
 
@@ -269,18 +292,21 @@ static int parse_standard(const char **arg)
     _3_ga = strstr(*arg, "3GA");
     if (_3_ga) {
         *arg += 3;
+        *level = SDI_LEVEL_A;
         return SDI_LINE_RATE_3G;
     }
 
     _3_gb = strstr(*arg, "3GB");
     if (_3_gb) {
         *arg += 3;
+        *level = SDI_LEVEL_B_DL;
         return SDI_LINE_RATE_3G;
     }
 
     _3_g = strstr(*arg, "3G");
     if (_3_g) {
         *arg += 2;
+        *level = SDI_LEVEL_A;
         return SDI_LINE_RATE_3G;
     }
 
@@ -394,7 +420,8 @@ int av_parse_standard_option(AVFormatContext *s, const char *arg, StandardOption
         return -1;
     }
 
-    option->standard = parse_standard(&arg);
+    option->level = SDI_LEVEL_NOT_APPLICABLE;
+    option->standard = parse_standard(&arg, &option->level);
     if (option->standard < SDI_LINE_RATE_SD ||
         option->standard > SDI_LINE_RATE_12G) {
         av_log(s, AV_LOG_ERROR, "SDI Standard not supported: %s\n", arg);
@@ -424,7 +451,7 @@ SdiFormat av_sdi_get_fmt(StandardOption *option)
         return SDI_FMT_NONE;
     }
 
-    format = ff_get_sdi_format(option->standard, option->lines);
+    format = ff_get_sdi_format(option->standard, option->level, option->lines);
     if (format == -1) {
         return SDI_FMT_NONE;
     }
@@ -475,7 +502,8 @@ SdiFormat av_find_matching_standard(AVFormatContext *s, StandardOption *option, 
 
         av_log(s, AV_LOG_DEBUG, "Options:\n");
         av_log(s, AV_LOG_DEBUG, "  Links        : %d\n", option->links);
-        av_log(s, AV_LOG_DEBUG, "  Standard     : %s\n", av_sdi_get_line_rate_name(option->standard));
+        av_log(s, AV_LOG_DEBUG, "  Standard     : %s%s\n", av_sdi_get_line_rate_name(option->standard),
+               option->level == SDI_LEVEL_B_DL ? " level B" : "");
         av_log(s, AV_LOG_DEBUG, "  Lines        : %d\n", option->lines);
         av_log(s, AV_LOG_DEBUG, "  Scanning mode: %s\n", av_sdi_get_scanning_method_name(option->scanning_mode));
         av_log(s, AV_LOG_DEBUG, "  Framerate    : %d/%d\n", option_rate.num, option_rate.den);
@@ -548,7 +576,7 @@ SdiFormat av_find_matching_standard(AVFormatContext *s, StandardOption *option, 
         }
 
         if (option) {
-            int format = ff_get_sdi_format(option->standard, option->lines);
+            int format = ff_get_sdi_format(option->standard, option->level, option->lines);
             if (format != info->payload_format)
                 continue;
             if (av_cmp_q(sdi_framerate, framerate) != 0)
@@ -570,6 +598,9 @@ SdiFormat av_find_matching_standard(AVFormatContext *s, StandardOption *option, 
                 valid_resolution = 1;
             }
 
+            // Level B only when -sdi_standard asks for it
+            if (av_sdi_is_level_b(info))
+                continue;
             if (valid_resolution && av_cmp_q(sdi_framerate, framerate) == 0) {
                 if (is_interlaced != sdi_is_interlaced)
                     continue;
@@ -620,7 +651,7 @@ int ff_sdi_get_nr_channels(uint32_t format)
     return ff_is_sd(format) ? 1 : ff_has_sub_images(format) ? 8 : 2;
 }
 
-int ff_get_sdi_format(int sdi_line_rate, int lines)
+int ff_get_sdi_format(int sdi_line_rate, SdiLevel level, int lines)
 {
     if (sdi_line_rate == SDI_LINE_RATE_SD && (lines == 576 || lines == 487))
         return 0x81;
@@ -629,7 +660,7 @@ int ff_get_sdi_format(int sdi_line_rate, int lines)
     if (sdi_line_rate == SDI_LINE_RATE_HD && lines == 1080)
         return 0x85;
     if (sdi_line_rate == SDI_LINE_RATE_3G && lines == 1080)
-        return 0x89;
+        return level == SDI_LEVEL_B_DL ? 0x8A : 0x89;
     if (sdi_line_rate == SDI_LINE_RATE_6G && lines == 2160)
         return 0xC0;
     if (sdi_line_rate == SDI_LINE_RATE_12G && lines == 2160)
