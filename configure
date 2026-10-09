@@ -7343,8 +7343,8 @@ enabled libass            && require_pkg_config libass "libass >= 0.11.0" ass/as
 enabled libbluray         && require_pkg_config libbluray libbluray libbluray/bluray.h bd_open
 enabled libbs2b           && require_pkg_config libbs2b libbs2b bs2b.h bs2b_open
 enabled libcaca           && require_pkg_config libcaca caca caca.h caca_create_canvas
-enabled libcdtapi         && require_pkg_config libcdtapi "cdtapi >= 6.14.9" cdtapi.h DtapiGetVersion
-enabled libcdtapi_nmos    && require_pkg_config libcdtapi_nmos "cdtapi >= 6.14.8 dtnmos >= 0.5.2" cdtapi_nmos.h DtNmosAvFifo_AddDevice
+enabled libcdtapi         && require_pkg_config libcdtapi "cdtapi >= 6.14.10" cdtapi.h DtapiGetVersion
+enabled libcdtapi_nmos    && require_pkg_config libcdtapi_nmos "cdtapi >= 6.14.10 dtnmos >= 0.5.2" cdtapi_nmos.h DtNmosAvFifo_AddDevice
 enabled libcodec2         && require libcodec2 codec2/codec2.h codec2_create -lcodec2
 enabled libdav1d          && require_pkg_config libdav1d "dav1d >= 1.0.0" "dav1d/dav1d.h" dav1d_version
 enabled libdavs2          && require_pkg_config libdavs2 "davs2 >= 1.6.0" davs2.h davs2_decoder_open
