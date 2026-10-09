@@ -340,10 +340,49 @@ fate-sdi-scale-1080i50: CMP = oneline
 fate-sdi-scale-1080i50: REF = f6f288a69797b288060dcb589c20f18f
 
 
+# The images in the formats the builder takes as they are, and as v210: the same 10-bit
+# images as yuv422p10le, y210le and v210 packets give one file, the same 8-bit images as
+# yuv422p and uyvy422 another. v210 out of the demuxer, copied, gives the file back.
+SDI_VF_I_Y210 = $(SDI_VF_I),scale,format=y210le
+SDI_VF_I_8 = setfield=tff,scale,format=yuv422p
+SDI_VF_I_UYVY = $(SDI_VF_I_8),scale,format=uyvy422
+
+FATE_SDI_PIX += fate-sdi-y210-1080i59_94
+fate-sdi-y210-1080i59_94: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,30000/1001,$(SDI_VF_I_Y210),stereo,,HD1080i) -f sdi md5:
+fate-sdi-y210-1080i59_94: CMP = oneline
+fate-sdi-y210-1080i59_94: REF = $(SDI_REF_A_1080I59_94)
+
+FATE_SDI_PIX += fate-sdi-v210-1080i59_94
+fate-sdi-v210-1080i59_94: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,30000/1001,$(SDI_VF_I),stereo,,HD1080i) -c:v v210 -f sdi md5:
+fate-sdi-v210-1080i59_94: CMP = oneline
+fate-sdi-v210-1080i59_94: REF = $(SDI_REF_A_1080I59_94)
+
+FATE_SDI_PIX += fate-sdi-v210-2160p59_94
+fate-sdi-v210-2160p59_94: CMD = ffmpeg $(call SDI_SRC_A_4K,60000/1001,12G2160p) -c:v v210 -f sdi md5:
+fate-sdi-v210-2160p59_94: CMP = oneline
+fate-sdi-v210-2160p59_94: REF = $(SDI_REF_A_2160P59_94)
+
+FATE_SDI_PIX += fate-sdi-copy-v210-1080i59_94
+fate-sdi-copy-v210-1080i59_94: CMD = sdi_copy_v210 $(call SDI_SRC_A,1920x1080,30000/1001,$(SDI_VF_I),stereo,,HD1080i)
+fate-sdi-copy-v210-1080i59_94: CMP = oneline
+fate-sdi-copy-v210-1080i59_94: REF = $(SDI_REF_A_1080I59_94)
+
+SDI_REF_8_1080I59_94 = 93f93d5585510f161421f2e5e1cc1ef9
+FATE_SDI_PIX += fate-sdi-yuv422p-1080i59_94
+fate-sdi-yuv422p-1080i59_94: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,30000/1001,$(SDI_VF_I_8),stereo,,HD1080i) -f sdi md5:
+fate-sdi-yuv422p-1080i59_94: CMP = oneline
+fate-sdi-yuv422p-1080i59_94: REF = $(SDI_REF_8_1080I59_94)
+
+FATE_SDI_PIX += fate-sdi-uyvy422-1080i59_94
+fate-sdi-uyvy422-1080i59_94: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,30000/1001,$(SDI_VF_I_UYVY),stereo,,HD1080i) -f sdi md5:
+fate-sdi-uyvy422-1080i59_94: CMP = oneline
+fate-sdi-uyvy422-1080i59_94: REF = $(SDI_REF_8_1080I59_94)
+
 SDI_A_DEPS = SDI_MUXER LAVFI_INDEV TESTSRC_FILTER SINE_FILTER SETFIELD_FILTER SCALE_FILTER \
              FORMAT_FILTER ARESAMPLE_FILTER AFORMAT_FILTER SETTB_FILTER ASETTB_FILTER \
              WRAPPED_AVFRAME_ENCODER PCM_S24LE_ENCODER MD5_PROTOCOL
 FATE_SDI_A-$(call ALLYES, $(SDI_A_DEPS) SDI_DEMUXER) += $(FATE_SDI_A)
+FATE_SDI_A-$(call ALLYES, $(SDI_A_DEPS) SDI_DEMUXER V210_ENCODER) += $(FATE_SDI_PIX)
 FATE_SDI_A-$(call ALLYES, $(SDI_A_DEPS) SDI_DEMUXER WRAPPED_AVFRAME_DECODER \
              RAWVIDEO_ENCODER PCM_S24LE_DECODER FRAMEMD5_MUXER) += $(FATE_SDI_RT)
 

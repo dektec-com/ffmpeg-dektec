@@ -245,6 +245,14 @@ sdi_copy(){
     ffmpeg -i $(target_path $srcfile) -c copy -flags +bitexact -fflags +bitexact -f sdi md5:
 }
 
+# sdi_copy_v210 ARGS... is sdi_copy with the demuxer's video as v210 packets.
+sdi_copy_v210(){
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    ffmpeg -y "$@" -f sdi $(target_path $srcfile) || return
+    ffmpeg -v210 1 -i $(target_path $srcfile) -c copy -flags +bitexact -fflags +bitexact -f sdi md5:
+}
+
 # sdi_roundtrip ARGS... makes an .sdi file from ARGS with the sdi muxer, and gives the
 # framemd5 of the images and the audio the sdi demuxer reads back from it.
 sdi_roundtrip(){
@@ -286,6 +294,19 @@ dektec_sdi_out(){
     CDTAPI_SIM=1 CDTAPI_SIM_SDI_SINK=$port:$(dektec_env_path $sinkfile) \
         ffmpeg "$@" -f dektec 9217800001:$port || return
     do_md5sum $sinkfile | awk '{print $1}'
+}
+
+# dektec_sdi_in_v210 VIDSTD FRAMES ARGS... is dektec_sdi_in with the input's video as
+# v210 packets, which FFmpeg's v210 decoder makes images of.
+dektec_sdi_in_v210(){
+    vidstd=$1
+    frames=$2
+    shift 2
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    ffmpeg -y "$@" -bitexact -f sdi -no_header 1 $(target_path $srcfile) || return
+    CDTAPI_SIM=1 CDTAPI_SIM_SDI_SOURCE=1:$vidstd:$(dektec_env_path $srcfile) \
+        framemd5 -v210 1 -f dektec -i 9217800001:1 -frames:v $frames -map 0 -c:v rawvideo -c:a pcm_s24le
 }
 
 # dektec_sdi_copy_out PORT ARGS... makes an .sdi file from ARGS with the sdi muxer, sends

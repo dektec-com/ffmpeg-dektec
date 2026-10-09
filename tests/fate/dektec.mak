@@ -80,8 +80,19 @@ fate-dektec-sdi-in-720p50: CMD = dektec_sdi_in 720P50 20 $(call DEKTEC_SRC,1280x
 FATE_DEKTEC_IN += fate-dektec-sdi-in-1080i50
 fate-dektec-sdi-in-1080i50: CMD = dektec_sdi_in 1080I50 10 $(call DEKTEC_SRC,1920x1080,25,$(DEKTEC_VF_I))
 
+# The same from v210 packets, which must send what the frames sent.
+FATE_DEKTEC_V210 += fate-dektec-sdi-out-v210-1080i59_94
+fate-dektec-sdi-out-v210-1080i59_94: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,1920x1080,30000/1001,$(DEKTEC_VF_I)) -c:v v210
+fate-dektec-sdi-out-v210-1080i59_94: CMP = oneline
+fate-dektec-sdi-out-v210-1080i59_94: REF = ea4598e433da20197ce88a49a904188e
+
 FATE_DEKTEC_IN += fate-dektec-sdi-in-1080i59_94
 fate-dektec-sdi-in-1080i59_94: CMD = dektec_sdi_in 1080I59_94 10 $(call DEKTEC_SRC,1920x1080,30000/1001,$(DEKTEC_VF_I))
+
+# The input's video as v210 packets, which decode to the images of
+# fate-dektec-sdi-in-1080i59_94.
+FATE_DEKTEC_V210 += fate-dektec-sdi-in-v210-1080i59_94
+fate-dektec-sdi-in-v210-1080i59_94: CMD = dektec_sdi_in_v210 1080I59_94 10 $(call DEKTEC_SRC,1920x1080,30000/1001,$(DEKTEC_VF_I))
 
 FATE_DEKTEC_IN += fate-dektec-sdi-in-2160p30
 fate-dektec-sdi-in-2160p30: CMD = dektec_sdi_in 2160P30 3 $(call DEKTEC_SRC_STILL_4K,3840x2160,30,$(DEKTEC_VF_P))
@@ -96,6 +107,8 @@ DEKTEC_SRC_DEPS = LAVFI_INDEV TESTSRC_FILTER SMPTEHDBARS_FILTER SINE_FILTER \
 FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_OUT)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV SDI_MUXER FRAMEMD5_MUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_IN)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV SDI_MUXER SDI_DEMUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_COPY)
+FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV DEKTEC_OUTDEV SDI_MUXER FRAMEMD5_MUXER V210_ENCODER V210_DECODER \
+                           $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_V210)
 
 FATE_FFMPEG += $(FATE_DEKTEC-yes)
 fate-dektec: $(FATE_DEKTEC-yes)
