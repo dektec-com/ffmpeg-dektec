@@ -236,6 +236,36 @@ md5(){
     do_md5sum $encfile | awk '{print $1}'
 }
 
+# sdi_copy ARGS... makes an .sdi file from ARGS with the sdi muxer, copies it into
+# another with -c copy, and gives the md5 of the copy, which must be that of the file.
+sdi_copy(){
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    ffmpeg -y "$@" -f sdi $(target_path $srcfile) || return
+    ffmpeg -i $(target_path $srcfile) -c copy -flags +bitexact -fflags +bitexact -f sdi md5:
+}
+
+# sdi_roundtrip ARGS... makes an .sdi file from ARGS with the sdi muxer, and gives the
+# framemd5 of the images and the audio the sdi demuxer reads back from it.
+sdi_roundtrip(){
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    ffmpeg -y "$@" -f sdi $(target_path $srcfile) || return
+    framemd5 -i $(target_path $srcfile) -map 0 -c:v rawvideo -c:a pcm_s24le
+}
+
+# sdi_roundtrip_noheader STANDARD ARGS... is sdi_roundtrip for frames without the file
+# header, which the demuxer reads as the sdi standard STANDARD.
+sdi_roundtrip_noheader(){
+    standard=$1
+    shift
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    ffmpeg -y "$@" -no_header 1 -f sdi $(target_path $srcfile) || return
+    framemd5 -no_header 1 -sdi_standard $standard -f sdi -i $(target_path $srcfile) \
+        -map 0 -c:v rawvideo -c:a pcm_s24le
+}
+
 # A path for an environment variable, which MSYS2 does not translate for a Windows
 # program as it translates its arguments.
 dektec_env_path(){
@@ -255,6 +285,21 @@ dektec_sdi_out(){
     rm -f $sinkfile
     CDTAPI_SIM=1 CDTAPI_SIM_SDI_SINK=$port:$(dektec_env_path $sinkfile) \
         ffmpeg "$@" -f dektec 9217800001:$port || return
+    do_md5sum $sinkfile | awk '{print $1}'
+}
+
+# dektec_sdi_copy_out PORT ARGS... makes an .sdi file from ARGS with the sdi muxer, sends
+# it with -c copy through port PORT and gives the md5 of what the port sent.
+dektec_sdi_copy_out(){
+    port=$1
+    shift
+    srcfile="${outdir}/${test}.src.sdi"
+    sinkfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile $sinkfile"
+    rm -f $sinkfile
+    ffmpeg -y "$@" -f sdi $(target_path $srcfile) || return
+    CDTAPI_SIM=1 CDTAPI_SIM_SDI_SINK=$port:$(dektec_env_path $sinkfile) \
+        ffmpeg -i $(target_path $srcfile) -c copy -f dektec 9217800001:$port || return
     do_md5sum $sinkfile | awk '{print $1}'
 }
 

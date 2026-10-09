@@ -52,6 +52,25 @@ fate-dektec-sdi-out-2160p50: CMD = dektec_sdi_out 5 $(call DEKTEC_SRC_4K,3840x21
 fate-dektec-sdi-out-2160p50: CMP = oneline
 fate-dektec-sdi-out-2160p50: REF = 836aaebb08a65751a026187dbadd14ab
 
+# 1080i59.94, a rate whose frame does not last a whole number of microseconds, and whose
+# audio follows a cadence of five frames: sent from a source, and copied from an .sdi
+# file with -c copy, which must send the same.
+FATE_DEKTEC_OUT += fate-dektec-sdi-out-1080i59_94
+fate-dektec-sdi-out-1080i59_94: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,1920x1080,30000/1001,$(DEKTEC_VF_I))
+fate-dektec-sdi-out-1080i59_94: CMP = oneline
+fate-dektec-sdi-out-1080i59_94: REF = ea4598e433da20197ce88a49a904188e
+
+FATE_DEKTEC_COPY += fate-dektec-sdi-copy-out-1080i59_94
+fate-dektec-sdi-copy-out-1080i59_94: CMD = dektec_sdi_copy_out 3 $(call DEKTEC_SRC,1920x1080,30000/1001,$(DEKTEC_VF_I))
+fate-dektec-sdi-copy-out-1080i59_94: CMP = oneline
+fate-dektec-sdi-copy-out-1080i59_94: REF = ea4598e433da20197ce88a49a904188e
+
+# 2160p50 copied from an .sdi file over 12G, which must send what the source sent.
+FATE_DEKTEC_COPY += fate-dektec-sdi-copy-out-2160p50
+fate-dektec-sdi-copy-out-2160p50: CMD = dektec_sdi_copy_out 5 $(call DEKTEC_SRC_4K,3840x2160,50,$(DEKTEC_VF_P))
+fate-dektec-sdi-copy-out-2160p50: CMP = oneline
+fate-dektec-sdi-copy-out-2160p50: REF = 836aaebb08a65751a026187dbadd14ab
+
 FATE_DEKTEC_IN += fate-dektec-sdi-in-576i50
 fate-dektec-sdi-in-576i50: CMD = dektec_sdi_in 625I50 10 $(call DEKTEC_SRC,720x576,25,$(DEKTEC_VF_I))
 
@@ -60,6 +79,9 @@ fate-dektec-sdi-in-720p50: CMD = dektec_sdi_in 720P50 20 $(call DEKTEC_SRC,1280x
 
 FATE_DEKTEC_IN += fate-dektec-sdi-in-1080i50
 fate-dektec-sdi-in-1080i50: CMD = dektec_sdi_in 1080I50 10 $(call DEKTEC_SRC,1920x1080,25,$(DEKTEC_VF_I))
+
+FATE_DEKTEC_IN += fate-dektec-sdi-in-1080i59_94
+fate-dektec-sdi-in-1080i59_94: CMD = dektec_sdi_in 1080I59_94 10 $(call DEKTEC_SRC,1920x1080,30000/1001,$(DEKTEC_VF_I))
 
 FATE_DEKTEC_IN += fate-dektec-sdi-in-2160p30
 fate-dektec-sdi-in-2160p30: CMD = dektec_sdi_in 2160P30 3 $(call DEKTEC_SRC_STILL_4K,3840x2160,30,$(DEKTEC_VF_P))
@@ -73,6 +95,7 @@ DEKTEC_SRC_DEPS = LAVFI_INDEV TESTSRC_FILTER SMPTEHDBARS_FILTER SINE_FILTER \
 
 FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_OUT)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV SDI_MUXER FRAMEMD5_MUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_IN)
+FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV SDI_MUXER SDI_DEMUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_COPY)
 
 FATE_FFMPEG += $(FATE_DEKTEC-yes)
 fate-dektec: $(FATE_DEKTEC-yes)
