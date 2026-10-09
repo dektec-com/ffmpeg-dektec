@@ -37,6 +37,7 @@
 #include "libavutil/imgutils.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/log.h"
+#include "libavutil/mathematics.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "sdicommon.h"
@@ -66,7 +67,7 @@ typedef struct SDIDemuxContext {
     int vidstd;                     ///< the standard's DTAPI_VIDSTD_ code
     int header_size;                ///< Size of header in bytes
     int frame_size;                 ///< SDI frame size, padding included
-    int64_t frame_duration;         ///< Frame duration in us
+    AVRational frame_rate;          ///< the standard's frame rate
 
     uint8_t *frame_buf;    ///< the frame being read
     AVBufferPool *image_pool; ///< the buffers of the images the parser writes
@@ -81,7 +82,7 @@ typedef struct SDIDemuxContext {
     int audio_nr_ch;       ///< channels of the audio stream
     int audio_samples;     ///< samples per channel of the last frame, yet to go out
     int warned_nr_ch;      ///< whether a change in the number of channels was logged
-    int64_t audio_pts;     ///< pts of the frame the audio came with
+    int64_t audio_pts;     ///< the number of the first sample of the last frame
 
     SdiFrameSource source; ///< lends the frames, instead of the input; see sdicommon.h
     int64_t frame_index;   ///< the frames lent so far, for their pts
@@ -272,7 +273,7 @@ static int sdi_setup(AVFormatContext *s)
     frame_count = FFMAX(avio_size(s->pb) - sdi->header_size, 0) / sdi->frame_size;
 
     rrate = av_sdi_rate(sdi_info->picture_rate);
-    sdi->frame_duration = (1000000 * rrate.den + rrate.num - 1)/ rrate.num;  // in us, rounded up
+    sdi->frame_rate = rrate;
     av_reduce(&sar.num, &sar.den,
             av_sdi_aspect_ratio(sdi_info->aspect_ratio).num * height,
             av_sdi_aspect_ratio(sdi_info->aspect_ratio).den * width,
@@ -291,11 +292,12 @@ static int sdi_setup(AVFormatContext *s)
     // Setup stream parameters. Use planar YUV format, as this seems to be
     // the only 10-bit YUV422 format.
     vst->id = VIDEO_STREAM_ID;
-    avpriv_set_pts_info(vst, 64, 1, 1000000);
+    // The images count in frames, which every rate gives exactly
+    avpriv_set_pts_info(vst, 64, rrate.den, rrate.num);
     vst->avg_frame_rate = rrate;
     vst->r_frame_rate = rrate;
     vst->nb_frames = frame_count;
-    vst->duration = frame_count * sdi->frame_duration;
+    vst->duration = frame_count;
     vst->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
     vst->codecpar->codec_id = AV_CODEC_ID_WRAPPED_AVFRAME;
     vst->codecpar->format = AV_PIX_FMT_YUV422P10;
@@ -478,7 +480,8 @@ static int add_audio_stream(AVFormatContext *s, int nr_ch)
     ast->codecpar->bit_rate = (int64_t)ast->codecpar->sample_rate *
                               ast->codecpar->bits_per_coded_sample *
                               ast->codecpar->ch_layout.nb_channels;
-    avpriv_set_pts_info(ast, 64, 1, 1000000);
+    // The audio counts in samples
+    avpriv_set_pts_info(ast, 64, 1, ast->codecpar->sample_rate);
     return 0;
 }
 
@@ -546,7 +549,7 @@ static int read_audio_packet(AVFormatContext *s, AVPacket *pkt)
     pkt->pos = avio_tell(s->pb);
     pkt->stream_index = sdi->audio_index;
     pkt->pts = pkt->dts = sdi->audio_pts;
-    pkt->duration = sdi->frame_duration;
+    pkt->duration = nr_samples;
 
     // The parser gives a sample its 24 bits at the top of 32
     ptr = pkt->data;
@@ -696,14 +699,16 @@ static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
     pkt->pos = pos;
     pkt->stream_index = VIDEO_STREAM_ID;
     if (pos >= 0)
-        pkt->pts = sdi->frame_duration * (pos - sdi->header_size) / sdi->frame_size;
+        pkt->pts = (pos - sdi->header_size) / sdi->frame_size;
     else
-        pkt->pts = sdi->frame_duration * sdi->frame_index;
+        pkt->pts = sdi->frame_index;
     pkt->dts = pkt->pts;
     sdi->frame_index++;
-    pkt->duration = sdi->frame_duration;
-    // The frame's audio goes out with the next call, at the frame's time
-    sdi->audio_pts = pkt->pts;
+    pkt->duration = 1;
+    // The frame's audio goes out with the next call. Its first sample is the frame's
+    // nominal one, which at a 1001 rate is the sum of the samples of the cadence before.
+    sdi->audio_pts = av_rescale_rnd(pkt->pts, 48000LL * sdi->frame_rate.den,
+                                    sdi->frame_rate.num, AV_ROUND_NEAR_INF);
 
     ret = take_audio(s, &audio);
     if (ret < 0) {
