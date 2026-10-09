@@ -1,0 +1,162 @@
+# Builds DekTec's FFmpeg on every push to dektec and every pull request, and runs FATE's
+# sdi tests and the device's on CDTAPI's emulated card:
+# - on Linux, static and shared, against the oldest CDTAPI configure accepts, built from
+#   its tag, so that configure's minimum holds and no internal symbol crosses libraries;
+# - on Linux against CDTAPI's main, which may fail without failing the run: it shows
+#   when the next CDTAPI asks for a change;
+# - on Windows with MSVC, static with the static C runtime and CDTAPI with its NMOS
+#   bridge from DekTec's vcpkg registry, as the release builds.
+# Every action runs on Node 24.
+
+name: CI
+
+on:
+  push:
+    branches: [dektec]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: static
+            cdtapi: minimum
+            build: ""
+          - name: shared
+            cdtapi: minimum
+            build: --shared
+          - name: cdtapi-main
+            cdtapi: main
+            build: ""
+    name: linux (${{ matrix.name }})
+    continue-on-error: ${{ matrix.cdtapi == 'main' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the build tools
+        run: sudo apt-get update && sudo apt-get install -y nasm pkg-config
+
+      # The oldest CDTAPI configure accepts, the tag of its require line, or main.
+      - name: Which CDTAPI
+        run: |
+          if [ "${{ matrix.cdtapi }}" = main ]; then
+              ref=main
+          else
+              ref=v$(sed -n 's/.*require_pkg_config libcdtapi "cdtapi >= \([0-9.]*\)".*/\1/p' configure)
+          fi
+          [ "$ref" != v ] || { echo "No CDTAPI minimum in configure" >&2; exit 1; }
+          sha=$(git ls-remote https://github.com/dektec-com/cdtapi.git "$ref" "refs/tags/$ref^{}" |
+                tail -n 1 | cut -f1)
+          echo "CDTAPI_REF=$ref" >> "$GITHUB_ENV"
+          echo "CDTAPI_SHA=$sha" >> "$GITHUB_ENV"
+          echo "CDTAPI $ref at $sha"
+
+      - uses: actions/cache@v5
+        id: cdtapi
+        with:
+          path: ${{ runner.temp }}/cdtapi
+          key: cdtapi-linux-${{ env.CDTAPI_SHA }}
+
+      - name: Build CDTAPI
+        if: steps.cdtapi.outputs.cache-hit != 'true'
+        run: |
+          git clone -q --depth 1 --branch "$CDTAPI_REF" https://github.com/dektec-com/cdtapi.git "$RUNNER_TEMP/cdtapi-src"
+          cmake -S "$RUNNER_TEMP/cdtapi-src" -B "$RUNNER_TEMP/cdtapi-build" -DCMAKE_BUILD_TYPE=Release \
+                -DCDTAPI_BUILD_TESTS=OFF -DCDTAPI_BUILD_EXAMPLES=OFF -DCDTAPI_WARNINGS_AS_ERRORS=OFF \
+                -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/cdtapi"
+          cmake --build "$RUNNER_TEMP/cdtapi-build" -j"$(nproc)"
+          cmake --install "$RUNNER_TEMP/cdtapi-build"
+
+      - name: Build FFmpeg and run FATE's sdi and dektec tests
+        run: |
+          sh tools/dektec/build.sh --cdtapi "$RUNNER_TEMP/cdtapi" ${{ matrix.build }} --fate \
+             -- --disable-doc > build.log 2>&1 || { tail -n 80 build.log; exit 1; }
+          grep -E '^TEST' build.log | wc -l | xargs echo "FATE tests:"
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: linux-${{ matrix.name }}-log
+          path: build.log
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          install: make diffutils pkgconf nasm
+          path-type: inherit
+
+      # MSVC's x64 environment for the steps that follow: the variables vcvars64.bat
+      # changes, PATH, INCLUDE and LIB among them, go into GITHUB_ENV.
+      - name: MSVC environment
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+          $vcvars = "$vs\VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "No vcvars64.bat in '$vs'" }
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+              if ($_ -match '^([^=]+)=(.*)$') {
+                  $name, $value = $Matches[1], $Matches[2]
+                  if ([Environment]::GetEnvironmentVariable($name) -ne $value) {
+                      "$name=$value" >> $env:GITHUB_ENV
+                  }
+              }
+          }
+
+      # vcpkg keeps the packages it built in a cache of its own, which this keeps from one
+      # run to the next, as long as DekTec's registry has not changed.
+      - name: DekTec's vcpkg registry
+        shell: pwsh
+        run: |
+          git clone -q --depth 1 https://github.com/dektec-com/dektec-vcpkg-registry.git "$env:RUNNER_TEMP\registry"
+          $sha = git -C "$env:RUNNER_TEMP\registry" rev-parse HEAD
+          "REGISTRY_SHA=$sha" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$env:RUNNER_TEMP\vcpkg-cache" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\vcpkg-cache" | Out-Null
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-windows-static-${{ env.REGISTRY_SHA }}
+          restore-keys: vcpkg-windows-static-
+
+      - name: Build CDTAPI with its NMOS bridge, static with the static C runtime
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "cdtapi[nmos]:x64-windows-static" `
+              --overlay-ports="$env:RUNNER_TEMP\registry\ports"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build FFmpeg and run FATE's sdi and dektec tests
+        shell: msys2 {0}
+        run: |
+          # MSVC's link.exe before MSYS2's, which is another program.
+          export PATH="$(dirname "$(command -v cl)"):$PATH"
+          sh tools/dektec/build.sh --vcpkg "$(cygpath -u "$VCPKG_INSTALLATION_ROOT")" \
+             --triplet x64-windows-static --crt mt --fate \
+             -- --disable-autodetect --disable-doc --enable-libcdtapi-nmos > build.log 2>&1 ||
+             { tail -n 80 build.log; exit 1; }
+          grep -E '^TEST' build.log | wc -l | xargs echo "FATE tests:"
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: windows-log
+          path: build.log
