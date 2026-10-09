@@ -32,6 +32,7 @@
 #include "libavformat/demux.h"
 #include "libavformat/internal.h"
 #include "libavformat/sdicommon.h"
+#include "libavformat/sdiframe.h"
 #include "libavformat/url.h"
 #include "libavutil/fifo.h"
 #include "libavutil/frame.h"
@@ -67,6 +68,10 @@
 
 #define AD_FRAMES_AUDIO 1001
 
+// The SDI frames an input reads at most to find whether they carry audio: a few, so
+// that they are not latency, as FFmpeg's default of 5 seconds would be.
+#define PROBE_FRAMES 5
+
 typedef struct AudioFormat {
     int sample_rate;
     int bps;
@@ -98,7 +103,6 @@ typedef struct DekTecDemuxContext {
     int64_t audio_buffer_pts;
 
     DtInpChannel* input;
-    int frame_size;
     char *option_standard;
     int64_t timestamp_align;
     int64_t signal_timeout;         // How long to wait for a signal; negative: no limit
@@ -107,11 +111,12 @@ typedef struct DekTecDemuxContext {
     int64_t signal_lost_ts;
     DtDetVidStd detected_standard;
 
-    int avio_buffer_size;
-    uint8_t *avio_buffer;
-    AVIOContext *avio;
-
-    AVFormatContext *format_context;
+    SdiUnpacker *unpacker;          // Takes each SDI frame apart where the card wrote it
+    int vidstd;                     // The SDI standard's DTAPI_VIDSTD_ code
+    int64_t frame_number;           // The number of the next frame taken apart
+    AVPacket *queued[2 * PROBE_FRAMES]; // The packets of the frames read to find the streams
+    int nb_queued;
+    int next_queued;
 
     const struct SdiInfo *sdi_info;
 
@@ -136,21 +141,6 @@ typedef struct DekTecDemuxContext {
     AvFifo_IpPars ippars[MAX_STREAMS]; // The stream of each FIFO, from its URL
 #endif
 } DekTecDemuxContext;
-
-static const char *rate_strings[12] = {
-    "...",    // dummy
-    "...",    // dummy
-    "23_98",
-    "24",
-    "47_95",
-    "25",
-    "29_97",
-    "30",
-    "48",
-    "50",
-    "59_94",
-    "60"
-};
 
 static AVRational frame_rates[] = {
     {60, 1},
@@ -180,38 +170,107 @@ static int interrupted(AVFormatContext *s)
     return cb->callback && cb->callback(cb->opaque);
 }
 
-// How long the sdi demuxer waits for a frame, in ms, before the device's loop looks at
-// the signal and the application again.
+// How long the input waits for a frame, in ms, before it looks at the signal and the
+// application again.
 #define LEND_TIMEOUT_MS 100
 
-// The sdi demuxer's input, which it never reads: it takes its frames from lend_frame.
-static int read_packet(void *opaque, uint8_t *buf, int buf_size)
+/*
+ * Take apart the next frame where the card wrote it, and give the frame back. Its image
+ * goes into pkt and its audio waits in the unpacker. Returns AVERROR(EAGAIN) when no
+ * frame came in LEND_TIMEOUT_MS or the frame is of another standard, which is left out.
+ */
+static int take_frame(AVFormatContext *s, AVPacket *pkt)
 {
-    return AVERROR_EOF;
-}
-
-// Lends the sdi demuxer the next frame where the card wrote it, so that its parser reads
-// the frame in place.
-static int lend_frame(void *opaque, DtSdiView *view)
-{
-    DekTecDemuxContext *context = (DekTecDemuxContext *)opaque;
+    DekTecDemuxContext *context = (DekTecDemuxContext *)s->priv_data;
+    DtSdiView *view = ff_sdi_unpacker_view(context->unpacker);
+    int vidstd = 0;
+    int ret;
     unsigned int result = DtInpChannel_AcquireFrame(context->input, view, LEND_TIMEOUT_MS,
                                                     NULL);
+
     if (result == DTAPI_E_TIMEOUT)
         return AVERROR(EAGAIN);
     if (result != DTAPI_OK) {
-        av_log(context, AV_LOG_ERROR, "Could not take a frame from DtInpChannel: %s\n",
+        av_log(s, AV_LOG_ERROR, "Could not take a frame from DtInpChannel: %s\n",
                DtapiResult2Str(result));
         return AVERROR(EIO);
     }
+    // A signal of another standard does not fit the streams
+    DtSdiView_GetFormat(view, &vidstd, NULL);
+    if (vidstd != context->vidstd) {
+        DtInpChannel_ReleaseFrame(context->input, view);
+        TIMED_LOG(s, AV_LOG_WARNING, "A frame of another standard than %s is left out\n",
+                  context->sdi_info->name);
+        return AVERROR(EAGAIN);
+    }
+    ret = ff_sdi_unpacker_parse(context->unpacker, context->frame_number++, pkt);
+    DtInpChannel_ReleaseFrame(context->input, view);
+    return ret;
+}
+
+/*
+ * Keep pkt, moved, to give it out before the frames that follow.
+ */
+static int queue_packet(DekTecDemuxContext *context, AVPacket *pkt)
+{
+    AVPacket *queued = av_packet_alloc();
+
+    if (!queued)
+        return AVERROR(ENOMEM);
+    av_packet_move_ref(queued, pkt);
+    context->queued[context->nb_queued++] = queued;
     return 0;
 }
 
-// Gives the card back the frame lend_frame lent, once the parser is done with it.
-static void give_back_frame(void *opaque, DtSdiView *view)
+/*
+ * Read the first frames, up to PROBE_FRAMES of them, until one carries audio, to add the
+ * audio stream in its channels, and keep their packets to give out first. Audio that
+ * starts later is left out.
+ */
+static int probe_frames(AVFormatContext *s)
 {
-    DekTecDemuxContext *context = (DekTecDemuxContext *)opaque;
-    DtInpChannel_ReleaseFrame(context->input, view);
+    DekTecDemuxContext *context = (DekTecDemuxContext *)s->priv_data;
+    AVPacket *pkt = av_packet_alloc();
+    int64_t start = av_gettime_relative();
+    int nb_frames = 0;
+    int ret = 0;
+
+    if (!pkt)
+        return AVERROR(ENOMEM);
+    while (nb_frames < PROBE_FRAMES) {
+        int nb_channels;
+
+        ret = take_frame(s, pkt);
+        if (ret == AVERROR(EAGAIN)) {
+            ret = 0;
+            if (interrupted(s)) {
+                ret = AVERROR_EXIT;
+                break;
+            }
+            // A signal is there: the frames take no longer than this to come
+            if (av_gettime_relative() - start > 2000000) {
+                av_log(s, AV_LOG_ERROR, "No frames came on port %d\n", context->port);
+                ret = AVERROR(EIO);
+                break;
+            }
+            continue;
+        }
+        if (ret < 0)
+            break;
+        nb_frames++;
+        ret = queue_packet(context, pkt);
+        if (ret < 0)
+            break;
+        nb_channels = ff_sdi_unpacker_nb_channels(context->unpacker);
+        if (nb_channels > 0) {
+            ret = ff_sdi_unpacker_add_audio_stream(context->unpacker, s, nb_channels);
+            if (ret >= 0 && ff_sdi_unpacker_audio(context->unpacker, pkt) > 0)
+                ret = queue_packet(context, pkt);
+            break;
+        }
+    }
+    av_packet_free(&pkt);
+    return ret;
 }
 
 #if HAVE_INTRINSICS_SSE2
@@ -393,15 +452,8 @@ static int inpchannel_read_header(AVFormatContext *s)
     int io_standard = 0;
     int sub_value = 0;
     StandardOption option = {0};
-    SdiLineRate line_rate;
-    int lines;
-    const char *type, *method, *rate;
     int vid_std, link_std;
     int max_fifo_size;
-    void *iter_state = NULL;
-    const struct AVInputFormat *iformat = NULL;
-    char *standard = NULL;
-    AVDictionary *options = NULL;
 
     result = DtDevice_SetToInput(context->device, context->port);
     if (result != DTAPI_OK) {
@@ -468,30 +520,6 @@ static int inpchannel_read_header(AVFormatContext *s)
         return -1;
     }
 
-
-    line_rate = SDI_LINE_RATE_SD;
-    switch (context->sdi_info->payload_format) {
-    case 0x81:
-       line_rate = SDI_LINE_RATE_SD;
-        break;
-    case 0x84:
-    case 0x85:
-       line_rate = SDI_LINE_RATE_HD;
-        break;
-    case 0x89:
-       line_rate = SDI_LINE_RATE_3G;
-        break;
-    case 0xC0:
-       line_rate = SDI_LINE_RATE_6G;
-        break;
-    case 0xCE:
-       line_rate = SDI_LINE_RATE_12G;
-        break;
-    };
-    type = av_sdi_get_line_rate_name(line_rate);
-    lines = context->sdi_info->picture_height;
-    method = av_sdi_get_scanning_method_name(context->sdi_info->scanning_method);
-    rate = rate_strings[context->sdi_info->picture_rate];
     av_log(s, AV_LOG_VERBOSE, "SDI standard: %s\n", context->sdi_info->name);
 
     vid_std = context->detected_standard.VidStd;
@@ -527,57 +555,18 @@ static int inpchannel_read_header(AVFormatContext *s)
     }
     av_log(s, AV_LOG_DEBUG, "max_fifo_size=%d\n", max_fifo_size);
 
-    // The sdi demuxer needs an input, though it takes its frames from lend_frame
-    context->frame_size = context->sdi_info->nr_sdi_lines *
-            (context->sdi_info->nr_hanc_symbols + context->sdi_info->nr_vanc_symbols) * 10 / 8;
-    context->avio_buffer_size = 4096;
-    context->avio_buffer = av_malloc(context->avio_buffer_size);
-    context->avio =
-        avio_alloc_context(context->avio_buffer, context->avio_buffer_size, 0,
-                           context, &read_packet, NULL, NULL);
-    av_log(s, AV_LOG_DEBUG, "frame_size=%d\n", context->frame_size);
-    
-    context->format_context = avformat_alloc_context();
-    if (!context->format_context) {
-        av_log(s, AV_LOG_ERROR, "Could not allocate avformat context\n");
-        return -1;
-    }
-
-    while (iformat = av_demuxer_iterate(&iter_state)) {
-        if (strcmp(iformat->name, "sdi") == 0)
-            break;
-    }
-    if (strcmp(iformat->name, "sdi") != 0) {
-        av_log(s, AV_LOG_ERROR, "Could not find SDI output format\n");
-        return -1;
-    }
-
-    context->format_context->iformat = iformat;
-    context->format_context->pb = context->avio;
-
-    standard = av_asprintf("%s%d%s%s", type, lines, method, rate);
-    av_dict_set(&options, "no_header", "1", 0);
-    av_dict_set(&options, "sdi_standard", standard, 0);
-    av_dict_set_int(&options, "threads", context->threads, 0);
-    av_free(standard);
-    result = avformat_open_input(&context->format_context, NULL, NULL, &options);
-    if (result != 0) {
-        av_log(s, AV_LOG_ERROR, "Could not open input: %s\n", av_err2str(result));
-        return -1;
-    }
-
-    // The demuxer takes each frame apart where the card wrote it, without a copy; its
-    // threads option gives its parser the threads, as the channel converts nothing.
-    ret = av_sdi_demux_set_source(context->format_context, &(SdiFrameSource){
-                                      .opaque = context,
-                                      .acquire = lend_frame,
-                                      .release = give_back_frame,
-                                  });
+    // CDTAPI's parser takes each frame apart where the card wrote it, without a copy;
+    // the threads option gives it its threads, as the channel converts nothing.
+    context->vidstd = av_sdi_vidstd(context->sdi_info);
+    ret = ff_sdi_unpacker_alloc(&context->unpacker, s, context->sdi_info, context->threads);
+    if (ret < 0)
+        return ret;
+    ret = ff_sdi_unpacker_add_video_stream(context->unpacker, s, 0);
     if (ret < 0)
         return ret;
 
-    // Receiving starts once the demuxer is ready to take the frames: a 2160p frame fills
-    // much of the card's buffer, which the time setting up the demuxer took would make
+    // Receiving starts once the parser is ready to take the frames: a 2160p frame fills
+    // much of the card's buffer, which the time setting up the parser took would make
     // overflow.
     result = DtInpChannel_SetRxControl(context->input, DTAPI_RXCTRL_RCV);
     if (result != DTAPI_OK) {
@@ -585,24 +574,9 @@ static int inpchannel_read_header(AVFormatContext *s)
         return -1;
     }
 
-    // The frames carry the video and any audio from the first on: a few are enough to
-    // find the streams, where FFmpeg's default of 5 seconds would keep that much in the
-    // FIFO as latency.
-    context->format_context->max_analyze_duration = 200000;
-    result = avformat_find_stream_info(context->format_context, NULL);
-    if (result != 0) {
-        av_log(s, AV_LOG_ERROR, "Could not find stream info: %s\n", av_err2str(result));
-        return -1;
-    }
-
-    for (int i = 0; i < context->format_context->nb_streams; i++) {
-        avformat_new_stream(s, NULL);
-        s->streams[i]->time_base = context->format_context->streams[i]->time_base;
-        s->streams[i]->avg_frame_rate = context->format_context->streams[i]->avg_frame_rate;
-        s->streams[i]->r_frame_rate = context->format_context->streams[i]->r_frame_rate;
-        avcodec_parameters_copy(s->streams[i]->codecpar, context->format_context->streams[i]->codecpar);
-    }
-
+    ret = probe_frames(s);
+    if (ret < 0)
+        return ret;
     return 1;
 }
 
@@ -621,8 +595,20 @@ static int inpchannel_read_packet(AVFormatContext *s, AVPacket *pkt)
         int has_packet = 0;
 
         if (context->has_signal) {
-            // The demuxer waits a moment for a frame, and gives EAGAIN when none came
-            ret = av_read_frame(context->format_context, pkt);
+            // The packets of the frames read to find the streams go first, then a frame's
+            // audio after its image; take_frame waits a moment for a frame, and gives
+            // EAGAIN when none came.
+            if (context->next_queued < context->nb_queued) {
+                av_packet_move_ref(pkt, context->queued[context->next_queued]);
+                av_packet_free(&context->queued[context->next_queued++]);
+                ret = pkt->stream_index == 0 ? 0 : 1;
+            } else {
+                ret = ff_sdi_unpacker_audio(context->unpacker, pkt);
+                if (ret == 0)
+                    ret = take_frame(s, pkt);
+            }
+            if (ret == 1)
+                return 0;
             if (ret < 0 && ret != AVERROR(EAGAIN))
                 return ret;
             if (ret == 0) {
@@ -712,7 +698,9 @@ static int inpchannel_read_close(AVFormatContext *s)
     DtInpChannel_Freep(&context->input);
     DtDevice_Freep(&context->device);
 
-    avformat_close_input(&context->format_context);
+    ff_sdi_unpacker_free(&context->unpacker);
+    for (int i = context->next_queued; i < context->nb_queued; i++)
+        av_packet_free(&context->queued[i]);
 
     av_log(s, AV_LOG_INFO, "Total frames received: %"PRId64"\n", context->frame_count);
     av_log(s, AV_LOG_INFO, "Total overflows: %"PRId64"\n", context->total_overflows);

@@ -32,28 +32,16 @@
 #include "demux.h"
 #include "internal.h"
 #include "libavcodec/get_bits.h"
-#include "libavutil/buffer.h"
-#include "libavutil/frame.h"
-#include "libavutil/imgutils.h"
-#include "libavutil/intreadwrite.h"
 #include "libavutil/log.h"
-#include "libavutil/mathematics.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "sdicommon.h"
+#include "sdiframe.h"
 
 #include "cdtapi_sdi.h"
 
 #include <stdint.h>
 #include <string.h>
-
-#define VIDEO_STREAM_ID 0
-#define AUDIO_STREAM_ID 1
-
-#define AUDIO_SAMPLE_SIZE 3
-
-/* The audio channels a frame can carry: four groups of four. */
-#define AUDIO_MAX_CHANNELS 16
 
 /* SDI private data */
 typedef struct SDIDemuxContext {
@@ -67,34 +55,11 @@ typedef struct SDIDemuxContext {
     int vidstd;                     ///< the standard's DTAPI_VIDSTD_ code
     int header_size;                ///< Size of header in bytes
     int frame_size;                 ///< SDI frame size, padding included
-    AVRational frame_rate;          ///< the standard's frame rate
 
     uint8_t *frame_buf;    ///< the frame being read
-    AVBufferPool *image_pool; ///< the buffers of the images the parser writes
-    int linesize[4];       ///< the linesizes of an image's planes
-    size_t plane_size[3];  ///< the sizes of an image's planes
-    DtSdiView *view;       ///< the view of frame_buf the parser reads
-    DtSdiParser *parser;   ///< takes each frame apart into its image and audio
-
-    int32_t *audio_buf;    ///< a frame's samples, one channel after the other
-    int max_samples;       ///< room for samples per channel in audio_buf
-    int audio_index;       ///< index of the audio stream, -1 until a frame carries audio
-    int audio_nr_ch;       ///< channels of the audio stream
-    int audio_samples;     ///< samples per channel of the last frame, yet to go out
-    int warned_nr_ch;      ///< whether a change in the number of channels was logged
-    int64_t audio_pts;     ///< the number of the first sample of the last frame
-
-    SdiFrameSource source; ///< lends the frames, instead of the input; see sdicommon.h
-    int64_t frame_index;   ///< the frames lent so far, for their pts
-    int warned_vidstd;     ///< whether a lent frame of another standard was logged
+    SdiUnpacker *unpacker; ///< takes each frame apart into its image and audio
+    int has_audio;         ///< whether the audio stream was added
 } SDIDemuxContext;
-
-static void free_frame(void *opaque, uint8_t *data)
-{
-    AVFrame *frame = (AVFrame *)data;
-
-    av_frame_free(&frame);
-}
 
 /* Test if we have a DekTec SDI file */
 static int sdi_probe(const AVProbeData *p)
@@ -181,7 +146,7 @@ static const struct SdiInfo *find_standard_from_sdi(AVFormatContext *s, struct S
     return NULL;
 }
 
-static void log_setup(AVFormatContext *s, AVRational sar)
+static void log_setup(AVFormatContext *s)
 {
     SDIDemuxContext *sdi = s->priv_data;
     const struct SdiInfo *sdi_info = sdi->sdi_info;
@@ -190,7 +155,6 @@ static void log_setup(AVFormatContext *s, AVRational sar)
     av_log(s, AV_LOG_DEBUG, "Frame size    = %d\n", sdi->frame_size);
     av_log(s, AV_LOG_DEBUG, "PayloadFormat = 0x%02x\n", sdi_info->payload_format);
     av_log(s, AV_LOG_DEBUG, "AspectRatio   = %s\n", sdi_info->aspect_ratio == SDI_AR_16_9 ? "16:9" : "4:3");
-    av_log(s, AV_LOG_DEBUG, "Sample ar     = %d/%d\n", sar.num, sar.den);
     av_log(s, AV_LOG_DEBUG, "Picture dim   = %dx%d\n", sdi_info->picture_width, sdi_info->picture_height);
     av_log(s, AV_LOG_DEBUG, "Interlacing   = pic:%d transport:%d\n", is_interlaced_picture(sdi_info->scanning_method), is_interlaced_transport(sdi_info->scanning_method));
 }
@@ -206,17 +170,9 @@ static int sdi_setup(AVFormatContext *s)
 {
     SDIDemuxContext *sdi = s->priv_data;
     const struct SdiInfo *sdi_info = sdi->sdi_info;
-    AVStream *vst = NULL;
-    AVRational rrate;
-    AVRational sar;
-    int64_t frame_count = 0;
-    int height = sdi_info->picture_height;
-    int width = sdi_info->picture_width;
-    DtWorkerPool *pool = NULL;
-    int num_threads = 0;
     size_t raw_size = 0;
     DtapiResult result;
-    int ret = 0;
+    int ret;
 
     // The parser takes a frame of the size of the standard's raw frame, which is that
     // of a frame in the file.
@@ -227,98 +183,24 @@ static int sdi_setup(AVFormatContext *s)
                sdi_info->name, raw_size, sdi->frame_size);
         return AVERROR_INVALIDDATA;
     }
-
     sdi->frame_buf = av_malloc(sdi->frame_size);
-    sdi->view = DtSdiView_Alloc();
-    sdi->parser = DtSdiParser_Alloc();
-    if (!sdi->frame_buf || !sdi->view || !sdi->parser)
+    if (!sdi->frame_buf)
         return AVERROR(ENOMEM);
 
-    // The images come from a pool: a buffer the size of an image, allocated anew for
-    // every frame, costs the system more than the parser takes to fill it.
-    ret = av_image_fill_linesizes(sdi->linesize, AV_PIX_FMT_YUV422P10LE, FFALIGN(width, 64));
+    ret = ff_sdi_unpacker_alloc(&sdi->unpacker, s, sdi_info, sdi->threads);
     if (ret < 0)
         return ret;
-    for (int i = 0; i < 3; i++)
-        sdi->plane_size[i] = (size_t)sdi->linesize[i] * height;
-    sdi->image_pool = av_buffer_pool_init(sdi->plane_size[0] + sdi->plane_size[1] +
-                                          sdi->plane_size[2], av_buffer_alloc);
-    if (!sdi->image_pool)
-        return AVERROR(ENOMEM);
-
-    ret = ff_sdi_worker_pool(s, sdi->threads, &pool, &num_threads);
+    log_setup(s);
+    ret = ff_sdi_unpacker_add_video_stream(sdi->unpacker, s,
+            FFMAX(avio_size(s->pb) - sdi->header_size, 0) / sdi->frame_size);
     if (ret < 0)
         return ret;
-    if (pool) {
-        result = DtSdiParser_SetWorkerPool(sdi->parser, pool, num_threads);
-        DtWorkerPool_Freep(&pool);
-        if (result != DTAPI_OK) {
-            av_log(s, AV_LOG_ERROR, "Could not give the parser its threads: %s\n",
-                   DtapiResult2Str(result));
-            return AVERROR(ENOMEM);
-        }
-    }
-
-    // Room for the most samples a frame of the standard carries, on every channel
-    result = DtSdiAudio_MaxSamples(sdi->vidstd, &sdi->max_samples);
-    if (result != DTAPI_OK)
-        return AVERROR_INVALIDDATA;
-    sdi->audio_buf = av_calloc((size_t)AUDIO_MAX_CHANNELS * sdi->max_samples,
-                               sizeof(*sdi->audio_buf));
-    if (!sdi->audio_buf)
-        return AVERROR(ENOMEM);
-    sdi->audio_index = -1;
-
-    // The device's input has no size
-    frame_count = FFMAX(avio_size(s->pb) - sdi->header_size, 0) / sdi->frame_size;
-
-    rrate = av_sdi_rate(sdi_info->picture_rate);
-    sdi->frame_rate = rrate;
-    av_reduce(&sar.num, &sar.den,
-            av_sdi_aspect_ratio(sdi_info->aspect_ratio).num * height,
-            av_sdi_aspect_ratio(sdi_info->aspect_ratio).den * width,
-            1024*1024);
-
-    log_setup(s, sar);
-
-    /*
-     * Create new video stream.
-     */
-    vst = avformat_new_stream(s, NULL);
-    if (!vst) {
-        av_log(s, AV_LOG_ERROR, "could not allocate stream\n");
-        return AVERROR(ENOMEM);
-    }
-    // Setup stream parameters. Use planar YUV format, as this seems to be
-    // the only 10-bit YUV422 format.
-    vst->id = VIDEO_STREAM_ID;
-    // The images count in frames, which every rate gives exactly
-    avpriv_set_pts_info(vst, 64, rrate.den, rrate.num);
-    vst->avg_frame_rate = rrate;
-    vst->r_frame_rate = rrate;
-    vst->nb_frames = frame_count;
-    vst->duration = frame_count;
-    vst->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
-    vst->codecpar->codec_id = AV_CODEC_ID_WRAPPED_AVFRAME;
-    vst->codecpar->format = AV_PIX_FMT_YUV422P10;
-    vst->codecpar->width  = sdi_info->picture_width;
-    vst->codecpar->height = sdi_info->picture_height;
-
-    // TODO: is it always TT? NTSC could be (is?) display bottom first?
-    if (is_interlaced_picture(sdi_info->scanning_method)) {
-        vst->codecpar->field_order = AV_FIELD_TT;
-    } else {
-        vst->codecpar->field_order = AV_FIELD_PROGRESSIVE;
-    }
-
-    av_log(s, AV_LOG_DEBUG, "Duration=%zd nrframes=%zd rate=%d/%d Hz\n",
-            vst->duration, vst->nb_frames, rrate.num, rrate.den);
 
     // Set packet size to read full frames.
     s->packet_size = sdi->frame_size;
-
     return 0;
 }
+
 static void get_sdi_format(struct GetBitContext *gb, struct Format *format)
 {
     int sdi_level, num_streams;
@@ -451,281 +333,50 @@ static int sdi_read_header(AVFormatContext *s)
 }
 
 /*
- * Add the audio stream, with the number of channels of the first frame that carries
- * audio. The number of channels stays: a later frame with fewer gives silence on the
- * others, one with more loses the channels beyond.
+ * Read one packet: the image of the next frame in the file, which CDTAPI's parser takes
+ * apart, or the frame's audio, which goes out with the next call. The audio stream is
+ * added with the first frame that carries audio, in the frame's channels.
  */
-static int add_audio_stream(AVFormatContext *s, int nr_ch)
-{
-    SDIDemuxContext *sdi = s->priv_data;
-    AVStream *ast = avformat_new_stream(s, NULL);
-
-    if (!ast) {
-        av_log(s, AV_LOG_ERROR, "could not allocate stream\n");
-        return AVERROR(ENOMEM);
-    }
-    sdi->audio_index = ast->index;
-    sdi->audio_nr_ch = nr_ch;
-
-    ast->id = AUDIO_STREAM_ID;
-    ast->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
-    ast->codecpar->codec_id = AV_CODEC_ID_PCM_S24LE;
-    ast->codecpar->ch_layout.nb_channels = nr_ch;
-    ast->codecpar->sample_rate = 48000;
-    ast->codecpar->format = AV_SAMPLE_FMT_S32;
-    ast->codecpar->bits_per_coded_sample = 24;
-    ast->codecpar->bits_per_raw_sample = 24;
-    ast->codecpar->block_align = ast->codecpar->bits_per_coded_sample *
-                                 ast->codecpar->ch_layout.nb_channels / 8;
-    ast->codecpar->bit_rate = (int64_t)ast->codecpar->sample_rate *
-                              ast->codecpar->bits_per_coded_sample *
-                              ast->codecpar->ch_layout.nb_channels;
-    // The audio counts in samples
-    avpriv_set_pts_info(ast, 64, 1, ast->codecpar->sample_rate);
-    return 0;
-}
-
-/*
- * Take the audio of the frame just parsed: the channels from the first up to the last
- * one the frame carried as valid audio. A channel the frame carried with samples marked
- * not valid is one a transmitter fills for a group's channels that have no audio, so
- * it does not count unless a valid channel follows it.
- */
-static int take_audio(AVFormatContext *s, const DtSdiAudio *audio)
-{
-    SDIDemuxContext *sdi = s->priv_data;
-    int nr_ch = 0;
-    int nr_samples = 0;
-    int ret;
-
-    for (int ch = 0; ch < AUDIO_MAX_CHANNELS; ch++) {
-        if (audio->Channels[ch].Present && !audio->Channels[ch].Invalid)
-            nr_ch = ch + 1;
-    }
-    if (nr_ch == 0)
-        return 0;
-
-    if (sdi->audio_index < 0) {
-        ret = add_audio_stream(s, nr_ch);
-        if (ret < 0)
-            return ret;
-    } else if (nr_ch != sdi->audio_nr_ch && !sdi->warned_nr_ch) {
-        av_log(s, AV_LOG_WARNING, "The frames now carry %d audio channels, the stream "
-               "keeps %d\n", nr_ch, sdi->audio_nr_ch);
-        sdi->warned_nr_ch = 1;
-    }
-
-    for (int ch = 0; ch < sdi->audio_nr_ch; ch++) {
-        if (audio->Channels[ch].Present)
-            nr_samples = FFMAX(nr_samples, audio->Channels[ch].NumSamples);
-    }
-    for (int ch = 0; ch < sdi->audio_nr_ch; ch++) {
-        const DtSdiAudioChannel *channel = &audio->Channels[ch];
-        int32_t *samples = sdi->audio_buf + (size_t)ch * sdi->max_samples;
-        int from = channel->Present ? FFMIN(channel->NumSamples, nr_samples) : 0;
-
-        memset(samples + from, 0, (nr_samples - from) * sizeof(*samples));
-    }
-    sdi->audio_samples = nr_samples;
-    return 0;
-}
-
-/*
- * Put the audio of the frame read last into pkt, as 24-bit samples, the channels
- * interleaved.
- */
-static int read_audio_packet(AVFormatContext *s, AVPacket *pkt)
-{
-    SDIDemuxContext *sdi = s->priv_data;
-    int nr_ch = sdi->audio_nr_ch;
-    int nr_samples = sdi->audio_samples;
-    uint8_t *ptr;
-    int ret;
-
-    sdi->audio_samples = 0;
-    ret = av_new_packet(pkt, nr_samples * nr_ch * AUDIO_SAMPLE_SIZE);
-    if (ret < 0)
-        return ret;
-    pkt->pos = avio_tell(s->pb);
-    pkt->stream_index = sdi->audio_index;
-    pkt->pts = pkt->dts = sdi->audio_pts;
-    pkt->duration = nr_samples;
-
-    // The parser gives a sample its 24 bits at the top of 32
-    ptr = pkt->data;
-    for (int i = 0; i < nr_samples; i++) {
-        for (int ch = 0; ch < nr_ch; ch++) {
-            AV_WL24(ptr, (uint32_t)sdi->audio_buf[(size_t)ch * sdi->max_samples + i] >> 8);
-            ptr += AUDIO_SAMPLE_SIZE;
-        }
-    }
-    return 0;
-}
-
-/*
- * Point the view at the next frame: one the source lends, or one read from the input.
- * Sets *pos to the frame's position in the input, or to -1 for a lent frame.
- */
-static int get_frame(AVFormatContext *s, int64_t *pos)
+static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
     SDIDemuxContext *sdi = s->priv_data;
     DtapiResult result;
-    int vidstd = 0;
+    int64_t pos;
     int ret;
 
-    if (sdi->source.acquire) {
-        *pos = -1;
-        ret = sdi->source.acquire(sdi->source.opaque, sdi->view);
-        if (ret < 0)
-            return ret;
-        // A signal of another standard does not fit the streams
-        DtSdiView_GetFormat(sdi->view, &vidstd, NULL);
-        if (vidstd != sdi->vidstd) {
-            sdi->source.release(sdi->source.opaque, sdi->view);
-            if (!sdi->warned_vidstd)
-                av_log(s, AV_LOG_WARNING, "Frames of another standard than %s are "
-                       "left out\n", sdi->sdi_info->name);
-            sdi->warned_vidstd = 1;
-            return AVERROR(EAGAIN);
-        }
-        return 0;
-    }
+    ret = ff_sdi_unpacker_audio(sdi->unpacker, pkt);
+    if (ret != 0)
+        return ret < 0 ? ret : 0;
 
-    *pos = avio_tell(s->pb);
+    pos = avio_tell(s->pb);
     ret = avio_read(s->pb, sdi->frame_buf, sdi->frame_size);
     if (ret < 0)
         return ret;
     if (ret < sdi->frame_size)
         return AVERROR_EOF;
-
-    result = DtSdiView_SetRawFrame(sdi->view, sdi->frame_buf, sdi->frame_size,
-                                   sdi->vidstd, 10);
+    result = DtSdiView_SetRawFrame(ff_sdi_unpacker_view(sdi->unpacker), sdi->frame_buf,
+                                   sdi->frame_size, sdi->vidstd, 10);
     if (result != DTAPI_OK) {
         av_log(s, AV_LOG_ERROR, "Could not point the parser at the frame: %s\n",
                DtapiResult2Str(result));
         return AVERROR_INVALIDDATA;
     }
-    return 0;
-}
 
-/*
- * Read one packet and put it in 'pkt'. pts and flags are also
- * set. 'avformat_new_stream' can be called only if the flag
- * AVFMTCTX_NOHEADER is used and only in the calling thread (not in a
- * background thread).
- * @return 0 on success, < 0 on error.
- *         When returning an error, pkt must not have been allocated
- *         or must be freed before returning
- *
- * Read a single SDI frame, or take one from the source, and take it apart with CDTAPI's
- * parser into its image, which goes out now, and its audio, which goes out with the
- * next call. A lent frame goes back as soon as the parser is done with it.
- */
-static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
-{
-    SDIDemuxContext *sdi = s->priv_data;
-    const struct SdiInfo *info = sdi->sdi_info;
-    AVFrame *frame = NULL;
-    DtSdiImage image = { 0 };
-    DtSdiAudio audio = { 0 };
-    DtapiResult result;
-    int64_t pos;
-    int ret = 0;
-
-    if (sdi->audio_samples > 0)
-        return read_audio_packet(s, pkt);
-
-    frame = av_frame_alloc();
-    if (!frame)
-        return AVERROR(ENOMEM);
-
-    frame->format = AV_PIX_FMT_YUV422P10LE;
-    frame->width = info->picture_width;
-    frame->height = info->picture_height;
-    frame->buf[0] = av_buffer_pool_get(sdi->image_pool);
-    if (!frame->buf[0]) {
-        av_frame_free(&frame);
-        return AVERROR(ENOMEM);
-    }
-    frame->data[0] = frame->buf[0]->data;
-    frame->data[1] = frame->data[0] + sdi->plane_size[0];
-    frame->data[2] = frame->data[1] + sdi->plane_size[1];
-    for (int i = 0; i < 3; i++)
-        frame->linesize[i] = sdi->linesize[i];
-    frame->extended_data = frame->data;
-
-    ret = get_frame(s, &pos);
-    if (ret < 0) {
-        av_frame_free(&frame);
+    ret = ff_sdi_unpacker_parse(sdi->unpacker, (pos - sdi->header_size) / sdi->frame_size,
+                                pkt);
+    if (ret < 0)
         return ret;
-    }
-
-    image.Format = DT_SDI_PIXFMT_YUV422P_10B;
-    image.Fields = DT_SDI_FIELDS_WOVEN;
-    for (int i = 0; i < 3; i++) {
-        image.Planes[i] = frame->data[i];
-        image.Strides[i] = frame->linesize[i];
-    }
-
-    // PCM on every channel, each into its own part of audio_buf
-    for (int pair = 0; pair < AUDIO_MAX_CHANNELS / 2; pair++)
-        audio.Formats[pair] = DT_SDI_AUDIO_PCM;
-    for (int ch = 0; ch < AUDIO_MAX_CHANNELS; ch++) {
-        audio.Channels[ch].Samples = sdi->audio_buf + (size_t)ch * sdi->max_samples;
-        audio.Channels[ch].MaxSamples = sdi->max_samples;
-    }
-
-    result = DtSdiParser_Parse(sdi->parser, sdi->view, &image, &audio, NULL);
-    if (sdi->source.release)
-        sdi->source.release(sdi->source.opaque, sdi->view);
-    if (result != DTAPI_OK) {
-        av_log(s, AV_LOG_ERROR, "Could not take the frame apart: %s\n",
-               DtapiResult2Str(result));
-        av_frame_free(&frame);
-        return AVERROR_INVALIDDATA;
-    }
-
-    pkt->buf =
-        av_buffer_create((uint8_t *)frame, sizeof(*frame), free_frame, NULL, 0);
-    if (!pkt->buf) {
-        av_frame_free(&frame);
-        return AVERROR(ENOMEM);
-    }
-
-    pkt->data = (uint8_t*)frame;
-    pkt->size = sizeof(*frame);
-    pkt->flags |= AV_PKT_FLAG_KEY;
-    pkt->flags |= AV_PKT_FLAG_TRUSTED;
     pkt->pos = pos;
-    pkt->stream_index = VIDEO_STREAM_ID;
-    if (pos >= 0)
-        pkt->pts = (pos - sdi->header_size) / sdi->frame_size;
-    else
-        pkt->pts = sdi->frame_index;
-    pkt->dts = pkt->pts;
-    sdi->frame_index++;
-    pkt->duration = 1;
-    // The frame's audio goes out with the next call. Its first sample is the frame's
-    // nominal one, which at a 1001 rate is the sum of the samples of the cadence before.
-    sdi->audio_pts = av_rescale_rnd(pkt->pts, 48000LL * sdi->frame_rate.den,
-                                    sdi->frame_rate.num, AV_ROUND_NEAR_INF);
 
-    ret = take_audio(s, &audio);
-    if (ret < 0) {
-        av_packet_unref(pkt);
-        return ret;
+    if (!sdi->has_audio && ff_sdi_unpacker_nb_channels(sdi->unpacker) > 0) {
+        ret = ff_sdi_unpacker_add_audio_stream(sdi->unpacker, s,
+                                               ff_sdi_unpacker_nb_channels(sdi->unpacker));
+        if (ret < 0) {
+            av_packet_unref(pkt);
+            return ret;
+        }
+        sdi->has_audio = 1;
     }
-    return 0;
-}
-
-int av_sdi_demux_set_source(AVFormatContext *s, const SdiFrameSource *source)
-{
-    SDIDemuxContext *sdi;
-
-    if (!s->iformat || strcmp(s->iformat->name, "sdi") || !s->priv_data)
-        return AVERROR(EINVAL);
-    sdi = s->priv_data;
-    sdi->source = *source;
     return 0;
 }
 
@@ -736,12 +387,8 @@ static int sdi_read_close(struct AVFormatContext *s)
 {
     SDIDemuxContext *sdi = s->priv_data;
 
-    DtSdiParser_Freep(&sdi->parser);
-    DtSdiView_Freep(&sdi->view);
-    av_buffer_pool_uninit(&sdi->image_pool);
+    ff_sdi_unpacker_free(&sdi->unpacker);
     av_freep(&sdi->frame_buf);
-    av_freep(&sdi->audio_buf);
-
     return 0;
 }
 

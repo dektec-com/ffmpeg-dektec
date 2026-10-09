@@ -189,30 +189,6 @@ int av_sdi_vidstd(const struct SdiInfo *info)
     return sdi_vidstd_table[info - sdi_table];
 }
 
-int ff_sdi_worker_pool(void *log_ctx, int threads, DtWorkerPool **pool, int *num_threads)
-{
-    int pool_threads = threads == FF_SDI_THREADS_AUTO ? FF_SDI_AUTO_THREADS : threads;
-    DtapiResult result;
-
-    *pool = NULL;
-    *num_threads = 0;
-    if (pool_threads < 2)
-        return 0;
-
-    *pool = DtWorkerPool_Alloc();
-    if (!*pool)
-        return AVERROR(ENOMEM);
-    result = DtWorkerPool_StartThreads(*pool, pool_threads);
-    if (result != DTAPI_OK) {
-        av_log(log_ctx, AV_LOG_ERROR, "Could not start %d threads: %s\n", pool_threads,
-               DtapiResult2Str(result));
-        DtWorkerPool_Freep(pool);
-        return AVERROR(ENOMEM);
-    }
-    *num_threads = threads == FF_SDI_THREADS_AUTO ? 0 : threads;
-    return 0;
-}
-
 const struct SdiInfo *av_sdi_info(SdiFormat sdi_fmt)
 {
     if (sdi_fmt < 0 || sdi_fmt >= SDI_FMT_NB)

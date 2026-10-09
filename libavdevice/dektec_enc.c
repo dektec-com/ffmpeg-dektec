@@ -30,6 +30,7 @@
 #include "libavcodec/codec_desc.h"
 #include "libavformat/avformat.h"
 #include "libavformat/sdicommon.h"
+#include "libavformat/sdiframe.h"
 #include "libavformat/mux.h"
 #include "libavutil/internal.h"
 #include "libavutil/mem.h"
@@ -94,15 +95,11 @@ typedef struct DekTecMuxContext {
     char *url_a[MAX_AUDIO_STREAMS]; // Audio URLS
     int is_interlaced;
 
-    int avio_buffer_size;
-    uint8_t *avio_buffer;
-    AVIOContext *avio;
-
     struct SwsContext *scale_context;
     AVFrame *scale_frame;
     int dst_format;
 
-    AVFormatContext *format_context;
+    SdiPacker *packer;              // Builds each SDI frame in room the card lends
 
     int (*write_header)(struct AVFormatContext *);
     int (*write_packet)(struct AVFormatContext *, AVPacket *pkt);
@@ -183,40 +180,37 @@ static const AVOption options[] = {
         av_log(avcl, level, "[%" PRId64 "] " fmt, time, ##__VA_ARGS__);        \
     } while (0)
 
-// How long the sdi muxer waits for room for a frame in the card's buffer, in ms.
+// How long the output waits for room for a frame in the card's buffer, in ms.
 #define LEND_TIMEOUT_MS 2000
 
-// The sdi muxer's output, which it never writes: it builds its frames in lend_room.
-static int write_packet(void *opaque, const uint8_t *buf, int buf_size)
+/*
+ * Build every frame the packer has ready, or with flush set every frame it holds, in
+ * room the card lends, and hand it to the card. A frame the builder refuses goes out
+ * black: until the room is handed on, the card lends no more.
+ */
+static int send_ready_frames(AVFormatContext *s, int flush)
 {
-    return AVERROR(EIO);
-}
+    DekTecMuxContext *context = (DekTecMuxContext *)s->priv_data;
+    DtSdiView *view = ff_sdi_packer_view(context->packer);
+    unsigned int result;
+    int ret;
 
-// Lends the sdi muxer room for its next frame in the card's transmit buffer, so that
-// its builder builds the frame there.
-static int lend_room(void *opaque, DtSdiView *view)
-{
-    DekTecMuxContext *context = (DekTecMuxContext *)opaque;
-    unsigned int result = DtOutpChannel_AcquireFrame(context->output, view, LEND_TIMEOUT_MS);
-    if (result != DTAPI_OK) {
-        av_log(context, AV_LOG_ERROR, "Could not take room for a frame from "
-               "DtOutpChannel: %s\n", DtapiResult2Str(result));
-        return AVERROR(EIO);
+    while ((ret = ff_sdi_packer_ready(context->packer, flush)) > 0) {
+        result = DtOutpChannel_AcquireFrame(context->output, view, LEND_TIMEOUT_MS);
+        if (result != DTAPI_OK) {
+            av_log(s, AV_LOG_ERROR, "Could not take room for a frame from "
+                   "DtOutpChannel: %s\n", DtapiResult2Str(result));
+            return AVERROR(EIO);
+        }
+        ff_sdi_packer_build(context->packer);
+        result = DtOutpChannel_CommitFrame(context->output, view);
+        if (result != DTAPI_OK) {
+            av_log(s, AV_LOG_ERROR, "Could not hand DtOutpChannel the frame: %s\n",
+                   DtapiResult2Str(result));
+            return AVERROR(EIO);
+        }
     }
-    return 0;
-}
-
-// Hands the card the frame the sdi muxer built in the room lend_room lent.
-static int send_frame(void *opaque, DtSdiView *view)
-{
-    DekTecMuxContext *context = (DekTecMuxContext *)opaque;
-    unsigned int result = DtOutpChannel_CommitFrame(context->output, view);
-    if (result != DTAPI_OK) {
-        av_log(context, AV_LOG_ERROR, "Could not hand DtOutpChannel the frame: %s\n",
-               DtapiResult2Str(result));
-        return AVERROR(EIO);
-    }
-    return 0;
+    return ret;
 }
 
 #if HAVE_INTRINSICS_SSE2
@@ -579,15 +573,13 @@ static int outpchannel_write_header(AVFormatContext *s)
     int ret = 0;
     const int tx_mode = DTAPI_TXMODE_SDI_FULL | DTAPI_TXMODE_SDI_10B;
     AVStream *video_stream = NULL;
+    AVStream *audio_stream = NULL;
     int io_standard = 0;
     int sub_value = 0;
     StandardOption option;
     SdiFormat standard = 0;
     const struct SdiInfo *sdi_info;
     int vid_std;
-    void* iter_state = NULL;
-    const struct AVOutputFormat *oformat = NULL;
-    AVDictionary *options = NULL;
 
     av_log(s, AV_LOG_INFO, "DekTec write header: %s\n", s->url);
 
@@ -675,62 +667,17 @@ static int outpchannel_write_header(AVFormatContext *s)
     }
     context->is_preloading = 1;
 
-    // The sdi muxer needs an output, though it builds its frames in lend_room
-    context->avio_buffer_size = 4096;
-    context->avio_buffer = av_malloc(context->avio_buffer_size);
-    context->avio =
-        avio_alloc_context(context->avio_buffer, context->avio_buffer_size, 1,
-                           context, NULL, &write_packet, NULL);
-    if (!context->avio) {
-        av_log(s, AV_LOG_ERROR, "Could not allocate avio context\n");
-        return -1;
-    }
-    
-    context->format_context = avformat_alloc_context();
-    if (!context->format_context) {
-        av_log(s, AV_LOG_ERROR, "Could not allocate avformat context\n");
-        return -1;
-    }
-
-    while (oformat = av_muxer_iterate(&iter_state)) {
-        if (strcmp(oformat->name, "sdi") == 0)
-            break;
-    }
-    if (strcmp(oformat->name, "sdi") != 0) {
-        av_log(s, AV_LOG_ERROR, "Could not find SDI output format\n");
-        return -1;
-    }
-
-    context->format_context->oformat = oformat;
-    context->format_context->pb = context->avio;
-
+    // CDTAPI's builder builds each frame in the card's buffer, without a copy, and
+    // without the line CRCs, which the card fills in; the threads option gives it its
+    // threads, as the channel converts nothing.
     for (int i = 0; i < s->nb_streams; i++) {
-        avformat_new_stream(context->format_context, NULL);
-        context->format_context->streams[i]->time_base = s->streams[i]->time_base;
-        context->format_context->streams[i]->avg_frame_rate = s->streams[i]->avg_frame_rate;
-        avcodec_parameters_copy(context->format_context->streams[i]->codecpar, s->streams[i]->codecpar);
-        // The device's default audio codec is 2110's big-endian L24; the sdi muxer
-        // takes little-endian samples, which outpchannel_write_packet makes of them.
-        if (s->streams[i]->codecpar->codec_id == AV_CODEC_ID_PCM_S24BE)
-            context->format_context->streams[i]->codecpar->codec_id = AV_CODEC_ID_PCM_S24LE;
+        if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            audio_stream = s->streams[i];
+            break;
+        }
     }
-
-    av_dict_set(&options, "no_header", "1", 0);
-    av_dict_set(&options, "calc_crc", "0", 0); // HW will do CRC
-    av_dict_set(&options, "sdi_standard", context->option_standard, 0);
-    av_dict_set_int(&options, "threads", context->threads, 0);
-    ret = avformat_write_header(context->format_context, &options);
-    if (ret != 0)
-        return ret;
-    av_dict_free(&options);
-
-    // The muxer builds each frame in the card's buffer, without a copy; its threads
-    // option gives its builder the threads, as the channel converts nothing.
-    ret = av_sdi_mux_set_sink(context->format_context, &(SdiFrameSink){
-                                  .opaque = context,
-                                  .acquire = lend_room,
-                                  .commit = send_frame,
-                              });
+    ret = ff_sdi_packer_alloc(&context->packer, s, sdi_info, context->threads, 0,
+                              video_stream, audio_stream, -1);
     if (ret < 0)
         return ret;
 
@@ -744,6 +691,7 @@ static int outpchannel_write_packet(AVFormatContext *s, AVPacket *pkt)
     int min_fifo_load = 0;
     int fifo_load = 0;
     unsigned int result = 0;
+    int ret;
 
     result = DtOutpChannel_GetFifoSize(context->output, &fifo_size);
     if (result != DTAPI_OK) {
@@ -752,20 +700,11 @@ static int outpchannel_write_packet(AVFormatContext *s, AVPacket *pkt)
     }
     min_fifo_load = (fifo_size * 3) / 4;
 
-    if (s->streams[pkt->stream_index]->codecpar->codec_id == AV_CODEC_ID_PCM_S24BE) {
-        int ret = av_packet_make_writable(pkt);
-        if (ret < 0)
-            return ret;
-        for (int i = 0; i + 2 < pkt->size; i += 3)
-            FFSWAP(uint8_t, pkt->data[i], pkt->data[i + 2]);
-    }
-
-    // The sdi muxer may have set a stream's time base of its own, such as the audio's
-    // sample rate
-    av_packet_rescale_ts(pkt, s->streams[pkt->stream_index]->time_base,
-                         context->format_context->streams[pkt->stream_index]->time_base);
-    av_write_frame(context->format_context, pkt);
-    av_packet_unref(pkt);
+    ret = ff_sdi_packer_add(context->packer, pkt);
+    if (ret >= 0)
+        ret = send_ready_frames(s, 0);
+    if (ret < 0)
+        return ret;
 
     result = DtOutpChannel_GetFifoLoad(context->output, &fifo_load);
     if (result != DTAPI_OK) {
@@ -785,6 +724,8 @@ static int outpchannel_write_packet(AVFormatContext *s, AVPacket *pkt)
 
     // While frames are built in its buffer the channel fills in nothing: a frame that
     // comes too late leaves the card without data, and the receiver loses the signal.
+    // The formatter reports that while it runs; a card that ran dry altogether reports
+    // it on its DMA side only.
     if (!context->is_preloading) {
         int flags = 0;
         int latched = 0;
@@ -793,7 +734,7 @@ static int outpchannel_write_packet(AVFormatContext *s, AVPacket *pkt)
             av_log(s, AV_LOG_ERROR, "Could not get flags from DtOutpChannel\n");
             return -1;
         }
-        if ((latched & DTAPI_TX_FIFO_UFL) != 0) {
+        if ((latched & (DTAPI_TX_FIFO_UFL | DTAPI_TX_DMA_UFL)) != 0) {
             TIMED_LOG(s, AV_LOG_WARNING, "The card ran out of frames to send\n");
             context->total_underflows++;
             DtOutpChannel_ClearFlags(context->output, latched);
@@ -808,7 +749,12 @@ static int outpchannel_write_trailer(AVFormatContext *s)
     DekTecMuxContext* context = (DekTecMuxContext*)s->priv_data;
     unsigned int result = 0;
 
-    av_write_trailer(context->format_context);
+    int ret;
+
+    // The frames still waiting for their audio go out with what audio there is
+    ret = send_ready_frames(s, 1);
+    if (ret < 0)
+        av_log(s, AV_LOG_ERROR, "Could not send the last frames\n");
     av_log(s, AV_LOG_INFO, "Total underflows: %"PRId64"\n", context->total_underflows);
 
     // A stream shorter than the preload has not started going out yet.
@@ -837,8 +783,7 @@ static int outpchannel_write_trailer(AVFormatContext *s)
     DtOutpChannel_Free(context->output);
     DtDevice_Free(context->device);
 
-    avformat_free_context(context->format_context);
-    avio_context_free(&context->avio);
+    ff_sdi_packer_free(&context->packer);
     return 1;
 }
 
