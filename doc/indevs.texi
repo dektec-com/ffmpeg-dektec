@@ -472,52 +472,78 @@ closed DTAPI.
 DekTec devices are identified by their serial number and port number
 (e.g. 2178000409:5). If no port is specified, port 1 is used.
 
+On an SDI port the input takes each frame apart where the card wrote it, with
+CDTAPI's SDI parser, without a copy. It gives what the @code{sdi} demuxer gives:
+a video stream in @code{yuv422p10}, coded with @code{wrapped_avframe}, and an
+audio stream in @code{pcm_s24le} in as many channels as the frames carry, up to
+16; the video counts in frames and the audio in samples at 48 kHz.
+
+@itemize
+@item
+The input reads up to five frames when it opens, to find whether they carry
+audio. Audio that starts later gets no stream.
+@item
+A frame of another standard than the one the input opened with is left out,
+and logged once.
+@item
+When no frame comes for a tenth of a second, the input checks the signal, and
+logs when it is lost and when it is back.
+@item
+Frames the card had to drop, because they were not taken in time, are logged,
+and their number is given when the input closes.
+@end itemize
+
 @subsection Options
 
 @table @option
 
 @item url[:stream_specifier]
 Specify the URL for a video stream (@var{stream_specifier} is 'v') or audio
-stream (@var{stream_specifier} is 'a'). With @option{nmos_registry}, the URL
-@samp{nmos} gives a stream whose address an NMOS controller sets: the input
-waits until the controller connects it, see @option{nmos_wait}.
+stream (@var{stream_specifier} is 'a'), e.g. @samp{239.0.0.5:5678}. With
+@option{nmos_registry}, you can give @samp{nmos} instead of an address: then an
+NMOS controller chooses which stream to receive, and ffmpeg waits until it has
+done so, see @option{nmos_wait}.
 
 @item pt
 Specify the RTP payload type of the received streams. Default is 96. Allowed
 range is from 96 to 127.
 
 @item nmos_registry
-Register the SMPTE 2110 streams with an NMOS registry, so that an NMOS
-controller can connect them over IS-05. Give the base URL of the registry's
-Registration API, e.g. @samp{http://registry.local}, or @samp{auto} to find
-one on the network with DNS-SD. The port becomes an NMOS node with the port as
-its device. Needs FFmpeg configured with @code{--enable-libcdtapi-nmos}, and a
-CDTAPI built with its NMOS bridge.
+Make the SMPTE 2110 streams known to an NMOS registry, so that a broadcast
+control system (an NMOS controller) can see and connect them. NMOS is the
+standard way in which control systems find and connect SMPTE 2110 devices.
+Give the address of the registry, e.g. @samp{http://registry.local}, or
+@samp{auto} to look for one on the network. Without this option, ffmpeg does
+not use NMOS. Needs FFmpeg configured with @code{--enable-libcdtapi-nmos}, and
+a CDTAPI with NMOS support.
+
+On an input, each stream shows up in the controller as a receiver. The
+controller can switch a receiver to another stream of the same format (the
+same resolution, frame rate, and so on), or switch it off and on. A stream of
+another format is refused, because the format cannot change once ffmpeg has
+started.
 
 @item nmos_label
-Set the label of the NMOS node; the labels of its streams start with it. The
-IDs of the node and its streams follow from the host and the labels, so that
-the same command keeps them when it runs again. Default is
-@samp{ffmpeg-@var{serial}:@var{port}}.
+Set the name under which ffmpeg shows up in the controller; the names of its
+streams start with it. Default is @samp{ffmpeg-@var{serial}:@var{port}}. The
+controller recognizes ffmpeg by an ID that follows from this name (and from
+@option{nmos_host}, when given), so when the same command runs again, the
+controller sees the same device again. Give each ffmpeg its own name.
 
 @item nmos_host
-Set the address at which controllers reach the node's APIs. By default it is
-the address of this host on the route to the registry.
+Set the address of this computer at which controllers reach ffmpeg. By default
+ffmpeg takes its address on the network that leads to the registry; set this
+option only when the computer has several addresses and that choice is wrong.
 
 @item nmos_port
-Set the port of the node's APIs. Default is 0, any free port.
+Set the network port at which controllers reach ffmpeg. Default is 0, which
+picks a free port; set it when a firewall lets only certain ports through.
 
 @item nmos_wait
-Set how long the input waits for a controller to connect the streams whose
-URL is @samp{nmos}. When it passes, opening the input fails and names the
-streams that were not connected. Default is 60 seconds; a negative value waits
-without a limit.
-
-With @option{nmos_registry}, each stream is an NMOS receiver, registered as
-receiving the stream of its URL. A controller may move a receiver to another
-stream of the same format, or disable and enable it. The format of a stream is
-fixed once the input is open, so an activation of another format is refused,
-and the controller is told the format the receiver takes.
+Set how long ffmpeg waits for a controller to connect the streams given as
+@samp{nmos}. If no controller has done so in time, ffmpeg stops with an error
+that names the streams that were not connected. Default is 60 seconds; a
+negative value waits without a limit.
 
 @item sample_rate
 Specify the audio samplerate. Available values are:
@@ -554,9 +580,10 @@ multiple. This lets inputs on several ports or hosts with synchronized clocks
 start at the same frame. Default is 0, which starts at the first frame.
 
 @item threads
-Set how many threads an SDI frame is converted over. Converting a 2160p frame is
-more than one slow core has time for at 50 or 60 frames a second. The values
-mean what they mean for a codec:
+Set how many threads the parser takes an SDI frame's image apart over. Taking a
+2160p frame apart is more than one slow core has time for at 50 or 60 frames a
+second. The audio is always taken in the thread that reads. The values mean what
+they mean for a codec:
 
 @table @samp
 @item auto, 0
@@ -607,6 +634,12 @@ ffmpeg -f dektec -nmos_registry auto -url:v nmos -i 2110000076:1 -f null -
 Receive and render an SDI stream from a DTA-2178:
 @example
 ffplay -f dektec -i 217800024:1
+@end example
+
+@item
+Record ten seconds of an SDI stream, its images and audio, to an SDI file:
+@example
+ffmpeg -f dektec -i 217800024:1 -t 10 -c copy out.sdi
 @end example
 
 @end itemize
