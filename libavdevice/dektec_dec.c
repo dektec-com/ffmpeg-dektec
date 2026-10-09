@@ -107,6 +107,7 @@ typedef struct DekTecDemuxContext {
     int64_t timestamp_align;
     int64_t signal_timeout;         // How long to wait for a signal; negative: no limit
     int threads;                    // The threads option: FF_DEKTEC_THREADS_AUTO, 1 or 2+
+    int v210;                       // The v210 option: SDI video as v210 packets
     int has_signal;
     int64_t signal_lost_ts;
     DtDetVidStd detected_standard;
@@ -563,7 +564,8 @@ static int inpchannel_read_header(AVFormatContext *s)
     // CDTAPI's parser takes each frame apart where the card wrote it, without a copy;
     // the threads option gives it its threads, as the channel converts nothing.
     context->vidstd = av_sdi_vidstd(context->sdi_info);
-    ret = ff_sdi_unpacker_alloc(&context->unpacker, s, context->sdi_info, context->threads);
+    ret = ff_sdi_unpacker_alloc(&context->unpacker, s, context->sdi_info, context->threads,
+                                context->v210);
     if (ret < 0)
         return ret;
     ret = ff_sdi_unpacker_add_video_stream(context->unpacker, s, 0);
@@ -1762,8 +1764,9 @@ static const AVOption options[] = {
     { "sdi_standard", "", OFFSET(option_standard), AV_OPT_TYPE_STRING, {.str = ""}, 0, 0, AV_OPT_FLAG_DECODING_PARAM, NULL},
     { "timestamp_align", "capture start time alignment (in seconds)", OFFSET(timestamp_align), AV_OPT_TYPE_DURATION, { .i64 = 0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM, NULL},
     { "signal_timeout", "how long to wait for an SDI signal, negative without limit", OFFSET(signal_timeout), AV_OPT_TYPE_DURATION, { .i64 = 5000000 }, -INT64_MAX, INT64_MAX, AV_OPT_FLAG_DECODING_PARAM, NULL},
-    { "threads", "threads an SDI frame is converted over: auto, 1 for one, or more", OFFSET(threads), AV_OPT_TYPE_INT, { .i64 = FF_DEKTEC_THREADS_AUTO }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM, "threads"},
+    { "threads", "threads an SDI frame is taken apart over: auto, 1 for one, or more", OFFSET(threads), AV_OPT_TYPE_INT, { .i64 = FF_DEKTEC_THREADS_AUTO }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM, "threads"},
     { "auto", "4 threads, and as many pieces as the standard calls for", 0, AV_OPT_TYPE_CONST, { .i64 = FF_DEKTEC_THREADS_AUTO }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, "threads"},
+    { "v210", "give SDI video as v210 packets rather than wrapped yuv422p10le frames", OFFSET(v210), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
 
     { "pt",   "RTP payload type", OFFSET(pt),    AV_OPT_TYPE_INT, {.i64 = 96}, 96, 127, AV_OPT_FLAG_DECODING_PARAM, NULL},
 

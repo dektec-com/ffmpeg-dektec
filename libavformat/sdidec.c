@@ -50,6 +50,7 @@ typedef struct SDIDemuxContext {
     char *option_standard; ///< option standard
     int option_no_header;  ///< option to disable file header
     int threads;           ///< option threads, FF_SDI_THREADS_AUTO, 1 or more
+    int v210;              ///< option v210: the video as v210 packets
 
     const struct SdiInfo *sdi_info; ///< constants for the standard used
     int vidstd;                     ///< the standard's DTAPI_VIDSTD_ code
@@ -187,7 +188,7 @@ static int sdi_setup(AVFormatContext *s)
     if (!sdi->frame_buf)
         return AVERROR(ENOMEM);
 
-    ret = ff_sdi_unpacker_alloc(&sdi->unpacker, s, sdi_info, sdi->threads);
+    ret = ff_sdi_unpacker_alloc(&sdi->unpacker, s, sdi_info, sdi->threads, sdi->v210);
     if (ret < 0)
         return ret;
     log_setup(s);
@@ -398,6 +399,7 @@ static const AVOption options[] = {
     { "no_header", "", offsetof(SDIDemuxContext, option_no_header), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM, NULL },
     { "threads", "threads a frame is taken apart over: auto, 1 for one, or more", offsetof(SDIDemuxContext, threads), AV_OPT_TYPE_INT, { .i64 = FF_SDI_THREADS_AUTO }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM, "threads" },
     { "auto", "4 threads, and as many pieces as the standard calls for", 0, AV_OPT_TYPE_CONST, { .i64 = FF_SDI_THREADS_AUTO }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, "threads" },
+    { "v210", "give the video as v210 packets rather than wrapped yuv422p10le frames", offsetof(SDIDemuxContext, v210), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
 
     { NULL },
 };

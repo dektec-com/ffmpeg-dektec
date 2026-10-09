@@ -87,9 +87,10 @@ struct SdiUnpacker {
     DtSdiView *view;            ///< the frame to take apart, which the caller points
     DtSdiParser *parser;
 
+    int v210;                   ///< whether the images are v210 packets
     AVBufferPool *image_pool;   ///< the buffers of the images the parser writes
-    int linesize[4];            ///< the linesizes of an image's planes
-    size_t plane_size[3];       ///< the sizes of an image's planes
+    int linesize[4];            ///< the linesizes of an image's planes; of v210, its lines
+    size_t plane_size[3];       ///< the sizes of an image's planes; of v210, the image
 
     int32_t *audio_buf;         ///< a frame's samples, one channel after the other
     int max_samples;            ///< room for samples per channel in audio_buf
@@ -113,8 +114,15 @@ static void free_frame(void *opaque, uint8_t *data)
     av_frame_free(&frame);
 }
 
+/* The bytes of a v210 line of width pixels: six pixels in 16 bytes, in whole blocks of
+ * 48 pixels, 128 bytes, as FFmpeg's v210 codec and CDTAPI have it. */
+static int v210_stride(int width)
+{
+    return (width + 47) / 48 * 128;
+}
+
 int ff_sdi_unpacker_alloc(SdiUnpacker **unpacker, void *log_ctx,
-                          const struct SdiInfo *info, int threads)
+                          const struct SdiInfo *info, int threads, int v210)
 {
     SdiUnpacker *u;
     DtWorkerPool *pool = NULL;
@@ -137,14 +145,22 @@ int ff_sdi_unpacker_alloc(SdiUnpacker **unpacker, void *log_ctx,
 
     // The images come from a pool: a buffer the size of an image, allocated anew for
     // every frame, costs the system more than the parser takes to fill it.
-    ret = av_image_fill_linesizes(u->linesize, AV_PIX_FMT_YUV422P10LE,
-                                  FFALIGN(info->picture_width, 64));
-    if (ret < 0)
-        return ret;
-    for (int i = 0; i < 3; i++)
-        u->plane_size[i] = (size_t)u->linesize[i] * info->picture_height;
-    u->image_pool = av_buffer_pool_init(u->plane_size[0] + u->plane_size[1] +
-                                        u->plane_size[2], av_buffer_alloc);
+    u->v210 = v210;
+    if (v210) {
+        u->linesize[0] = v210_stride(info->picture_width);
+        u->plane_size[0] = (size_t)u->linesize[0] * info->picture_height;
+        u->image_pool = av_buffer_pool_init(u->plane_size[0] + AV_INPUT_BUFFER_PADDING_SIZE,
+                                            av_buffer_alloc);
+    } else {
+        ret = av_image_fill_linesizes(u->linesize, AV_PIX_FMT_YUV422P10LE,
+                                      FFALIGN(info->picture_width, 64));
+        if (ret < 0)
+            return ret;
+        for (int i = 0; i < 3; i++)
+            u->plane_size[i] = (size_t)u->linesize[i] * info->picture_height;
+        u->image_pool = av_buffer_pool_init(u->plane_size[0] + u->plane_size[1] +
+                                            u->plane_size[2], av_buffer_alloc);
+    }
     if (!u->image_pool)
         return AVERROR(ENOMEM);
 
@@ -206,8 +222,12 @@ int ff_sdi_unpacker_add_video_stream(SdiUnpacker *unpacker, AVFormatContext *s,
     st->nb_frames = nb_frames;
     st->duration = nb_frames;
     st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
-    st->codecpar->codec_id = AV_CODEC_ID_WRAPPED_AVFRAME;
+    st->codecpar->codec_id = unpacker->v210 ? AV_CODEC_ID_V210 : AV_CODEC_ID_WRAPPED_AVFRAME;
     st->codecpar->format = AV_PIX_FMT_YUV422P10;
+    if (unpacker->v210)
+        st->codecpar->bit_rate = av_rescale(unpacker->plane_size[0] * 8,
+                                            unpacker->frame_rate.num,
+                                            unpacker->frame_rate.den);
     st->codecpar->width = info->picture_width;
     st->codecpar->height = info->picture_height;
     // An interlaced picture, carried in two fields or in one, has its top field first
@@ -280,8 +300,38 @@ int ff_sdi_unpacker_parse(SdiUnpacker *unpacker, int64_t frame_number, AVPacket 
     DtSdiImage image = { 0 };
     DtSdiAudio audio = { 0 };
     DtapiResult result;
-    AVFrame *frame = av_frame_alloc();
+    AVFrame *frame;
 
+    image.Fields = DT_SDI_FIELDS_WOVEN;
+    for (int pair = 0; pair < FF_SDI_AUDIO_MAX_CHANNELS / 2; pair++)
+        audio.Formats[pair] = DT_SDI_AUDIO_PCM;
+    for (int ch = 0; ch < FF_SDI_AUDIO_MAX_CHANNELS; ch++) {
+        audio.Channels[ch].Samples = u->audio_buf + (size_t)ch * u->max_samples;
+        audio.Channels[ch].MaxSamples = u->max_samples;
+    }
+
+    if (u->v210) {
+        // The image is the packet
+        pkt->buf = av_buffer_pool_get(u->image_pool);
+        if (!pkt->buf)
+            return AVERROR(ENOMEM);
+        pkt->data = pkt->buf->data;
+        pkt->size = (int)u->plane_size[0];
+        memset(pkt->data + pkt->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+        image.Format = DT_SDI_PIXFMT_V210;
+        image.Planes[0] = pkt->data;
+        image.Strides[0] = u->linesize[0];
+        result = DtSdiParser_Parse(u->parser, u->view, &image, &audio, NULL);
+        if (result != DTAPI_OK) {
+            av_log(u->log_ctx, AV_LOG_ERROR, "Could not take the frame apart: %s\n",
+                   DtapiResult2Str(result));
+            av_packet_unref(pkt);
+            return AVERROR_INVALIDDATA;
+        }
+        goto image_done;
+    }
+
+    frame = av_frame_alloc();
     if (!frame)
         return AVERROR(ENOMEM);
     frame->format = AV_PIX_FMT_YUV422P10LE;
@@ -300,20 +350,12 @@ int ff_sdi_unpacker_parse(SdiUnpacker *unpacker, int64_t frame_number, AVPacket 
     frame->extended_data = frame->data;
 
     image.Format = DT_SDI_PIXFMT_YUV422P_10B;
-    image.Fields = DT_SDI_FIELDS_WOVEN;
     for (int i = 0; i < 3; i++) {
         image.Planes[i] = frame->data[i];
         image.Strides[i] = frame->linesize[i];
     }
 
     // PCM on every channel, each into its own part of audio_buf
-    for (int pair = 0; pair < FF_SDI_AUDIO_MAX_CHANNELS / 2; pair++)
-        audio.Formats[pair] = DT_SDI_AUDIO_PCM;
-    for (int ch = 0; ch < FF_SDI_AUDIO_MAX_CHANNELS; ch++) {
-        audio.Channels[ch].Samples = u->audio_buf + (size_t)ch * u->max_samples;
-        audio.Channels[ch].MaxSamples = u->max_samples;
-    }
-
     result = DtSdiParser_Parse(u->parser, u->view, &image, &audio, NULL);
     if (result != DTAPI_OK) {
         av_log(u->log_ctx, AV_LOG_ERROR, "Could not take the frame apart: %s\n",
@@ -329,7 +371,10 @@ int ff_sdi_unpacker_parse(SdiUnpacker *unpacker, int64_t frame_number, AVPacket 
     }
     pkt->data = (uint8_t *)frame;
     pkt->size = sizeof(*frame);
-    pkt->flags |= AV_PKT_FLAG_KEY | AV_PKT_FLAG_TRUSTED;
+    pkt->flags |= AV_PKT_FLAG_TRUSTED;
+
+image_done:
+    pkt->flags |= AV_PKT_FLAG_KEY;
     pkt->stream_index = 0;
     pkt->pts = pkt->dts = frame_number;
     pkt->duration = 1;
@@ -392,6 +437,7 @@ struct SdiPacker {
     DtSdiBuilder *builder;
 
     AVStream *video_stream;
+    int v210;                   ///< whether the images are v210 packets
     struct SwsContext *scale_context; ///< scales the images to the standard's, or NULL
     AVFrame *scale_frame;             ///< the scaled image
 
@@ -407,8 +453,23 @@ struct SdiPacker {
     AVPacket *image_pkt;        ///< the image of the frame being built
 };
 
+/* The builder's format of an FFmpeg pixel format it takes as it is, or
+ * DT_SDI_PIXFMT_NONE. */
+static DtSdiPixelFormat builder_format(int format)
+{
+    switch (format) {
+    case AV_PIX_FMT_YUV422P10LE: return DT_SDI_PIXFMT_YUV422P_10B;
+    case AV_PIX_FMT_Y210LE:      return DT_SDI_PIXFMT_Y210;
+    case AV_PIX_FMT_YUV422P:     return DT_SDI_PIXFMT_YUV422P_8B;
+    case AV_PIX_FMT_UYVY422:     return DT_SDI_PIXFMT_UYVY_8B;
+    default:                     return DT_SDI_PIXFMT_NONE;
+    }
+}
+
 /*
- * Set up scaling to the standard's image when the stream's differs.
+ * Set up scaling to the standard's image when the stream's differs in size, or is in a
+ * format the builder does not take. v210 is not scaled: it must be of the standard's
+ * size.
  */
 static int init_scaling(SdiPacker *p)
 {
@@ -418,7 +479,22 @@ static int init_scaling(SdiPacker *p)
     int dst_format = AV_PIX_FMT_YUV422P10LE;
     int ret;
 
-    if (par->width == dst_width && par->height == dst_height && par->format == dst_format)
+    if (par->codec_id == AV_CODEC_ID_V210) {
+        if (par->width != dst_width || par->height != dst_height) {
+            av_log(p->log_ctx, AV_LOG_ERROR, "v210 of %dx%d is not the %dx%d of %s\n",
+                   par->width, par->height, dst_width, dst_height, p->info->name);
+            return AVERROR(EINVAL);
+        }
+        p->v210 = 1;
+        return 0;
+    }
+    if (par->codec_id != AV_CODEC_ID_WRAPPED_AVFRAME) {
+        av_log(p->log_ctx, AV_LOG_ERROR, "SDI takes video as wrapped_avframe or v210, "
+               "not %s\n", avcodec_get_name(par->codec_id));
+        return AVERROR(EINVAL);
+    }
+    if (par->width == dst_width && par->height == dst_height &&
+        builder_format(par->format) != DT_SDI_PIXFMT_NONE)
         return 0;
 
     p->scale_context = sws_getContext(par->width, par->height, par->format, dst_width,
@@ -653,18 +729,41 @@ int ff_sdi_packer_build(SdiPacker *packer)
     if (ret < 0)
         return ret;
 
-    frame = (const AVFrame *)p->image_pkt->data;
-    if (p->scale_context) {
-        ret = sws_scale_frame(p->scale_context, p->scale_frame, frame);
-        frame = p->scale_frame;
-    }
-    if (ret >= 0) {
-        image.Format = DT_SDI_PIXFMT_YUV422P_10B;
-        image.Fields = DT_SDI_FIELDS_WOVEN;
+    image.Fields = DT_SDI_FIELDS_WOVEN;
+    if (p->v210) {
+        int stride = v210_stride(p->info->picture_width);
+
+        image.Format = DT_SDI_PIXFMT_V210;
+        image.Planes[0] = p->image_pkt->data;
+        image.Strides[0] = stride;
+        if (p->image_pkt->size < (int64_t)stride * p->info->picture_height) {
+            av_log(p->log_ctx, AV_LOG_ERROR, "A v210 image of %d bytes, %d expected\n",
+                   p->image_pkt->size, stride * p->info->picture_height);
+            ret = AVERROR_INVALIDDATA;
+        }
+    } else {
+        frame = (const AVFrame *)p->image_pkt->data;
+        if (p->scale_context) {
+            ret = sws_scale_frame(p->scale_context, p->scale_frame, frame);
+            frame = p->scale_frame;
+        }
+        image.Format = builder_format(frame->format);
+        if (ret >= 0 && (image.Format == DT_SDI_PIXFMT_NONE ||
+                         frame->width != p->info->picture_width ||
+                         frame->height != p->info->picture_height)) {
+            av_log(p->log_ctx, AV_LOG_ERROR, "An image of %dx%d %s, where the stream "
+                   "has %dx%d %s\n", frame->width, frame->height,
+                   av_get_pix_fmt_name(frame->format), p->video_stream->codecpar->width,
+                   p->video_stream->codecpar->height,
+                   av_get_pix_fmt_name(p->video_stream->codecpar->format));
+            ret = AVERROR(EINVAL);
+        }
         for (int i = 0; i < 3; i++) {
             image.Planes[i] = frame->data[i];
             image.Strides[i] = frame->linesize[i];
         }
+    }
+    if (ret >= 0) {
         if (p->audio_stream)
             convert_audio(p, &audio, nb_samples);
         result = DtSdiBuilder_Build(p->builder, p->view, &image,

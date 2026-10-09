@@ -58,12 +58,12 @@ typedef struct SdiUnpacker SdiUnpacker;
 
 /**
  * Allocate an unpacker for frames of the standard info, with the threads of the threads
- * option.
+ * option. Its images are wrapped yuv422p10le frames, or v210 packets with v210 set.
  *
  * @return 0, or a negative error code
  */
 int ff_sdi_unpacker_alloc(SdiUnpacker **unpacker, void *log_ctx,
-                          const struct SdiInfo *info, int threads);
+                          const struct SdiInfo *info, int threads, int v210);
 
 /**
  * Free an unpacker, and set *unpacker to NULL.
@@ -76,8 +76,8 @@ void ff_sdi_unpacker_free(SdiUnpacker **unpacker);
 DtSdiView *ff_sdi_unpacker_view(SdiUnpacker *unpacker);
 
 /**
- * Add the video stream to s, as stream 0: wrapped frames of the standard's image, which
- * count in frames, nb_frames of them, 0 when not known.
+ * Add the video stream to s, as stream 0: wrapped frames or v210 packets of the
+ * standard's image, which count in frames, nb_frames of them, 0 when not known.
  *
  * @return 0, or a negative error code
  */
@@ -125,9 +125,12 @@ typedef struct SdiPacker SdiPacker;
 
 /**
  * Allocate a packer for frames of the standard info, from the images of video_stream,
- * scaled to the standard's when they differ, and the audio of audio_stream, or none
- * without one, in nb_channels channels, or the stream's with -1. Builds the line CRCs
- * and packet checksums when checksums is set.
+ * and the audio of audio_stream, or none without one, in nb_channels channels, or the
+ * stream's with -1. Builds the line CRCs and packet checksums when checksums is set.
+ *
+ * The images are v210 packets, or wrapped frames. The builder takes v210 and frames in
+ * yuv422p10le, y210le, yuv422p and uyvy422 as they are, at the standard's size; frames
+ * of another format or size are scaled and converted to yuv422p10le.
  *
  * @return 0, or a negative error code
  */
