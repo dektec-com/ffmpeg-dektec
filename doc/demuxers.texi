@@ -1132,9 +1132,11 @@ somehow pauses the playback or seeks, all times will be shifted accordingly.
 DekTec SDI file demuxer.
 
 It reads the uncompressed SDI frames that the @code{sdi} muxer writes; the
-@code{dektec} input device uses it to read the SDI frames it receives. It gives
-a video stream in @code{yuv422p10}, coded with @code{wrapped_avframe}, and an audio stream in
-@code{pcm_s24le} as soon as a frame carries embedded audio.
+@code{dektec} input device takes the SDI frames it receives apart the same way.
+It gives a video stream in @code{yuv422p10}, coded with @code{wrapped_avframe},
+and an audio stream in @code{pcm_s24le} as soon as a frame carries embedded
+audio. The video counts in frames of the standard's rate and the audio in
+samples at 48 kHz, so that a copy keeps every timestamp exact.
 
 CDTAPI's SDI parser takes the frames apart, so the demuxer needs FFmpeg
 configured with @code{--enable-libcdtapi}. The audio stream has as many
@@ -1155,7 +1157,9 @@ read from the header.
 
 @item sdi_standard
 Set the SDI standard of a file without a header, in the form of the
-@code{sdi} muxer's @option{sdi_standard}, e.g. @samp{HD1080i}.
+@code{sdi} muxer's @option{sdi_standard} followed by the frame rate, e.g.
+@samp{HD1080i29_97} or @samp{3G1080p59_94}. Without the rate it is the lowest
+rate of the standard.
 
 @item threads
 Set the number of threads a frame's image is taken apart over. @samp{auto},
@@ -1175,9 +1179,10 @@ ffplay in.sdi
 @end example
 
 @item
-Read an SDI file without a header, which holds 1080i video:
+Read an SDI file without a header, which holds 1080i video at 29.97 frames per
+second:
 @example
-ffmpeg -f sdi -no_header 1 -sdi_standard HD1080i -i in.sdi out.mkv
+ffmpeg -f sdi -no_header 1 -sdi_standard HD1080i29_97 -i in.sdi out.mkv
 @end example
 @end itemize
 

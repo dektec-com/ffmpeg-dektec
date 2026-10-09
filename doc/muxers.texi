@@ -3345,8 +3345,8 @@ It writes a video stream, and optionally an audio stream, as uncompressed SDI
 frames: every line with its ancillary data, in 10-bit words packed together,
 as DekTec's cards send and receive them. By default the file starts with a
 header that names the SDI standard, and the frame count when the output is
-seekable. The @code{dektec} output device uses this muxer to make its SDI
-frames.
+seekable. The @code{dektec} output device puts its SDI frames together the same
+way, in the card's buffer.
 
 CDTAPI's SDI builder puts the frames together, so the muxer needs FFmpeg
 configured with @code{--enable-libcdtapi}. Each frame carries the payload ID
@@ -3362,6 +3362,15 @@ embedded in the horizontal ancillary data: up to 16 channels, in groups of
 four. The channels of a group that the stream does not fill carry silence
 marked as not valid. Of @code{pcm_s32le} the upper 24 bits are embedded, and
 in SD the upper 20.
+
+Each image goes into a frame with the audio of its time. The muxer counts in
+frames and in samples at 48 kHz, from the packets' timestamps rounded to the
+nearest frame or sample, so that streams in any time base, and an SDI file
+copied with @code{-c copy}, give the same frames. A frame's samples follow on
+from those of the frame before: at 29.97 and 59.94 frames per second in the
+cadence of SMPTE ST 299-1, 1602, 1601, 1602, 1601, 1602 samples at 29.97. A gap
+in the audio is filled with silence, and an image whose audio has not come
+when eight images wait goes out with silence.
 
 @subsection Options
 
