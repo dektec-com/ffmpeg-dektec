@@ -3352,9 +3352,13 @@ CDTAPI's SDI builder puts the frames together, so the muxer needs FFmpeg
 configured with @code{--enable-libcdtapi}. Each frame carries the payload ID
 of SMPTE ST 352, and the audio as SMPTE ST 299-1 has it, or ST 272 in SD.
 
-The video stream is coded with @code{wrapped_avframe}. Frames that are not
-@code{yuv422p10le} at the picture size of the standard are scaled and
-converted to it; the largest input is 3840x2160. An interlaced standard needs
+The video stream is coded with @code{wrapped_avframe} or @code{v210}. Frames
+in @code{yuv422p10le}, @code{y210le}, @code{yuv422p} or @code{uyvy422} at the
+picture size of the standard go into the frames as they are; others are scaled
+and converted to @code{yuv422p10le}, and the largest input is 3840x2160. 8-bit
+samples become the upper 8 bits of SDI's 10. @code{v210} must be of the
+standard's picture size, and goes into the frames as it is: SDI files from and
+to MOV or MXF of @code{v210} need no conversion. An interlaced standard needs
 top field first video, e.g. with the @code{setfield=tff} filter.
 
 The audio stream is @code{pcm_s24le} or @code{pcm_s32le} at 48 kHz, and is

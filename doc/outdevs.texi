@@ -289,8 +289,10 @@ DekTec devices are identified by their serial number and port number
 On an SDI port the output builds each frame with CDTAPI's SDI builder in room
 the card lends in its transmit buffer, without a copy, and without the line
 CRCs, which the card fills in. It takes what the @code{sdi} muxer takes: a video
-stream coded with @code{wrapped_avframe}, scaled and converted to
-@code{yuv422p10le} at the standard's picture size when it differs, and an audio
+stream coded with @code{wrapped_avframe}, in @code{yuv422p10le}, @code{y210le},
+@code{yuv422p} or @code{uyvy422} as it is and in other formats scaled and
+converted, or coded with @code{v210}, which goes out without a conversion; and an
+audio
 stream in @code{pcm_s24le}, @code{pcm_s24be} or @code{pcm_s32le} at 48 kHz, of
 up to 16 channels, each image with the audio of its time. An SDI file can be
 sent as it is, with @code{-c copy}.
@@ -431,6 +433,13 @@ ffmpeg -i input.ts -url:v 239.0.0.5:5678 -url:a 239.0.0.6:5680 -f dektec 2110000
 Playout an MPEG transport stream via a DTA-2178 port 3:
 @example
 ffmpeg -i input.ts -f dektec 217800024:3
+@end example
+
+@item
+Send the @code{v210} images and the audio of a MOV file via a DTA-2178 port 5,
+without a conversion:
+@example
+ffmpeg -i in.mov -c copy -f dektec 217800024:5
 @end example
 
 @item

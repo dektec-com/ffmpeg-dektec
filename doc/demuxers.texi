@@ -1161,6 +1161,11 @@ Set the SDI standard of a file without a header, in the form of the
 @samp{HD1080i29_97} or @samp{3G1080p59_94}. Without the rate it is the lowest
 rate of the standard.
 
+@item v210 @var{bool}
+Give the video as @code{v210} packets rather than @code{wrapped_avframe} frames
+in @code{yuv422p10}, so that it can be copied into MOV or MXF without a
+conversion. Default is disabled.
+
 @item threads
 Set the number of threads a frame's image is taken apart over. @samp{auto},
 the default, starts 4 threads and divides a frame as its standard calls for;
@@ -1176,6 +1181,12 @@ reading thread.
 Play an SDI file:
 @example
 ffplay in.sdi
+@end example
+
+@item
+Copy the images and audio of an SDI file into MOV, as @code{v210}:
+@example
+ffmpeg -v210 1 -i in.sdi -c copy out.mov
 @end example
 
 @item

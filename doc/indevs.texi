@@ -474,7 +474,8 @@ DekTec devices are identified by their serial number and port number
 
 On an SDI port the input takes each frame apart where the card wrote it, with
 CDTAPI's SDI parser, without a copy. It gives what the @code{sdi} demuxer gives:
-a video stream in @code{yuv422p10}, coded with @code{wrapped_avframe}, and an
+a video stream in @code{yuv422p10}, coded with @code{wrapped_avframe}, or in
+@code{v210} with the @option{v210} option, and an
 audio stream in @code{pcm_s24le} in as many channels as the frames carry, up to
 16; the video counts in frames and the audio in samples at 48 kHz.
 
@@ -569,6 +570,11 @@ Specify the number of audio channels. Allowed range is from 1 to 64.
 Force a specific SDI standard. Otherwise the standard will automatically be
 deduced from the video input parameters.
 
+@item v210 @var{bool}
+On an SDI port, give the video as @code{v210} packets rather than
+@code{wrapped_avframe} frames, so that it can be recorded into MOV or MXF
+without a conversion. Default is disabled.
+
 @item signal_timeout
 Set how long to wait for a signal on an SDI port before giving up. Default is
 5 seconds; a negative value, such as -1, waits without a limit.
@@ -634,6 +640,13 @@ ffmpeg -f dektec -nmos_registry auto -url:v nmos -i 2110000076:1 -f null -
 Receive and render an SDI stream from a DTA-2178:
 @example
 ffplay -f dektec -i 217800024:1
+@end example
+
+@item
+Record ten seconds of an SDI stream into MOV as @code{v210}, without a
+conversion:
+@example
+ffmpeg -v210 1 -f dektec -i 217800024:1 -t 10 -c copy out.mov
 @end example
 
 @item
