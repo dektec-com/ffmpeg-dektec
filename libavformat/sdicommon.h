@@ -31,8 +31,6 @@
 #define AVFORMAT_SDICOMMON_H
 
 #include "avformat.h"
-#include "packet_internal.h"
-#include "libavutil/fifo.h"
 #include "libavutil/rational.h"
 
 #include "cdtapi.h"
@@ -291,25 +289,6 @@ static const uint16_t PARITY_TABLE256_DATA[256] =
 #undef P2
 #undef P4
 #undef P6
-
-typedef struct SdiBuffer {
-    int max_buffer;
-    AVStream *stream;
-    int64_t last_pts;
-    int64_t last_duration;
-    PacketList *queue;
-
-    int64_t fifo_pts;
-    struct AVFifo *fifo;
-} SdiBuffer;
-
-SdiBuffer *ff_sdi_buffer_alloc(AVStream *stream);
-void ff_sdi_buffer_free(SdiBuffer *buffer);
-void ff_sdi_buffer_freep(SdiBuffer **buffer);
-int ff_sdi_buffer_add(SdiBuffer *buffer, AVPacket *pkt);
-int ff_sdi_buffer_contains(SdiBuffer *buffer, int64_t pts, int64_t duration);
-int ff_sdi_buffer_get_audio(SdiBuffer *buffer, void *dest, int dest_size, int64_t pts, int n_samples);
-int ff_sdi_buffer_get_video(SdiBuffer *buffer, AVPacket *pkt, int64_t pts, int64_t duration);
 
 AVRational av_sdi_rate(SdiPictureRate rate);          // From SdiPictureRate to AVRational
 AVRational av_sdi_aspect_ratio(SdiAspectRatio ratio); // From SdiAspectRatio to AVrational

@@ -39,13 +39,12 @@
 #include "libavutil/pixdesc.h"
 #include "libswscale/swscale.h"
 #include "sdicommon.h"
+#include "sdipair.h"
 
 #include "cdtapi_sdi.h"
 
 #include <inttypes.h>
 #include <string.h>
-
-#define MAX_STREAMS 8
 
 /* The audio channels a frame can carry: four groups of four. */
 #define AUDIO_MAX_CHANNELS 16
@@ -70,10 +69,10 @@ typedef struct SdiMuxContext {
     DtSdiView *view;                ///< the view of frame_buf the builder writes
     DtSdiBuilder *builder;          ///< puts each frame together
     int num_frames;
-    int64_t next_pts;
-    AVRational time_base;
 
-    SdiBuffer *buffer[MAX_STREAMS];
+    AVStream *video_stream;         ///< the video stream
+    SdiPair *pair;                  ///< pairs the images and the audio into frames
+    AVPacket *image_pkt;            ///< the image of the frame being built
 
     struct SwsContext *scale_context; ///< swscale context
     AVFrame *scale_frame;             ///< scale frame
@@ -85,7 +84,6 @@ typedef struct SdiMuxContext {
     int max_samples;          ///< most samples per channel a frame carries
     uint8_t *audio_in;        ///< a frame's samples, as the audio stream has them
     int32_t *audio_buf;       ///< the same, 24 bits at the top of 32, interleaved
-    int64_t audio_pts;        ///< pts of the next frame's first sample
 
     SdiFrameSink sink;        ///< lends room for the frames, instead of the output
 } SdiMuxContext;
@@ -285,19 +283,6 @@ static void write_sdi_header(struct AVFormatContext *s, SdiMuxContext *sdi)
     avio_write(s->pb, buffer, hdr.header_size);
 }
 
-static void prepare_buffers(AVFormatContext *s)
-{
-    SdiMuxContext *sdi = s->priv_data;
-
-    for (int i = 0; i < FFMIN(s->nb_streams, MAX_STREAMS); ++i) {
-        sdi->buffer[i] = ff_sdi_buffer_alloc(s->streams[i]);
-        if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
-            sdi->buffer[i]->max_buffer = 3;
-        else if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
-            sdi->buffer[i]->max_buffer = 3*800;
-    }
-}
-
 static int init_scaling(AVFormatContext *s, SdiMuxContext *sdi, AVStream *stream)
 {
     int src_width = stream->codecpar->width;
@@ -420,7 +405,6 @@ static int init_audio(AVFormatContext *s, SdiMuxContext *sdi, AVStream *audio_st
     if (!sdi->audio_in || !sdi->audio_buf)
         return AVERROR(ENOMEM);
     sdi->audio_stream = audio_stream;
-    sdi->audio_pts = AV_NOPTS_VALUE;
     return 0;
 }
 
@@ -494,8 +478,7 @@ static int sdi_init(AVFormatContext *s)
     }
     sdi->sdi_info = sdi_info = av_sdi_info(standard);
     sdi->rrate = av_sdi_rate(sdi_info->picture_rate);
-    sdi->next_pts = AV_NOPTS_VALUE;
-    sdi->time_base = av_inv_q(sdi->rrate);
+    sdi->video_stream = video_stream;
 
     av_log(s, AV_LOG_DEBUG, "SDI standard: %s\n", sdi_info->name);
 
@@ -511,8 +494,6 @@ static int sdi_init(AVFormatContext *s)
     if (ret < 0)
         return ret;
 
-    prepare_buffers(s);
-
     av_log(s, AV_LOG_DEBUG, "Frame size %d with padding %d\n", sdi->frame_size,
            sdi->frame_padding);
 
@@ -525,6 +506,12 @@ static int sdi_init(AVFormatContext *s)
             return ret;
     }
 
+    sdi->pair = ff_sdi_pair_alloc(sdi->rrate, sdi->audio_stream ?
+                                  sdi->stream_nr_ch * sdi->bytes_per_sample : 0);
+    sdi->image_pkt = av_packet_alloc();
+    if (!sdi->pair || !sdi->image_pkt)
+        return AVERROR(ENOMEM);
+
     return 0;
 }
 
@@ -536,9 +523,8 @@ static void sdi_deinit(AVFormatContext *s)
     av_freep(&sdi->frame_buf);
     av_freep(&sdi->audio_in);
     av_freep(&sdi->audio_buf);
-    for (int i = 0; i < FFMIN(s->nb_streams, MAX_STREAMS); ++i) {
-        ff_sdi_buffer_freep(&sdi->buffer[i]);
-    }
+    ff_sdi_pair_free(&sdi->pair);
+    av_packet_free(&sdi->image_pkt);
     sws_freeContext(sdi->scale_context);
     sdi->scale_context = NULL;
     av_frame_free(&sdi->scale_frame);
@@ -554,34 +540,14 @@ static int sdi_write_sdi_header(AVFormatContext *s)
 }
 
 /*
- * Take the samples of the next frame from the audio stream, as many as the builder
- * embeds in it, into audio_buf; samples the stream does not have are silent. Sets up
- * audio to point the builder at them.
- *
- * The samples follow on from those of the frame before. At a 1001 rate a frame does not
- * start on a sample, and its number of samples follows the cadence, so the first sample
- * of a frame is counted on from the first frame's rather than worked out from its time.
+ * Convert the nr_samples samples of the next frame in audio_in, as the audio stream has
+ * them, into audio_buf, and point audio at them for the builder. Channels the stream
+ * does not have are silent.
  */
-static int get_frame_audio(AVFormatContext *s, SdiMuxContext *sdi, DtSdiAudio *audio)
+static void convert_audio(SdiMuxContext *sdi, DtSdiAudio *audio, int nr_samples)
 {
-    int stream_index = sdi->audio_stream->index;
     int bps = sdi->bytes_per_sample;
     int stride = sdi->stream_nr_ch * bps;
-    int nr_samples = 0;
-    DtapiResult result;
-
-    result = DtSdiBuilder_GetNumAudioSamples(sdi->builder, sdi->vidstd, 0, &nr_samples);
-    if (result != DTAPI_OK)
-        return AVERROR(EINVAL);
-
-    if (sdi->audio_pts == AV_NOPTS_VALUE)
-        sdi->audio_pts = av_rescale_q_rnd(sdi->next_pts, sdi->time_base,
-                                          sdi->audio_stream->time_base, AV_ROUND_UP);
-    memset(sdi->audio_in, 0, (size_t)nr_samples * stride);
-    ff_sdi_buffer_get_audio(sdi->buffer[stream_index], sdi->audio_in,
-                            nr_samples * stride, sdi->audio_pts, nr_samples);
-    sdi->audio_pts += av_rescale_q(nr_samples, (AVRational){ 1, 48000 },
-                                   sdi->audio_stream->time_base);
 
     // The builder takes 24 bits at the top of 32
     for (int i = 0; i < nr_samples; i++) {
@@ -603,7 +569,6 @@ static int get_frame_audio(AVFormatContext *s, SdiMuxContext *sdi, DtSdiAudio *a
         audio->Channels[ch].Stride = sdi->audio_nr_ch;
         audio->Channels[ch].NumSamples = nr_samples;
     }
-    return 0;
 }
 
 /*
@@ -628,10 +593,11 @@ static int get_room(AVFormatContext *s, SdiMuxContext *sdi)
 }
 
 /*
- * Write a new SDI frame, which CDTAPI's builder puts together from the image and the
- * audio for its time, in the muxer's buffer or in room the sink lends.
+ * Write a new SDI frame, which CDTAPI's builder puts together from the image in arg_pkt
+ * and the nr_samples samples in audio_in, in the muxer's buffer or in room the sink
+ * lends.
  */
-static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt)
+static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt, int nr_samples)
 {
     SdiMuxContext *sdi = s->priv_data;
     AVFrame *arg_frame = (AVFrame*)arg_pkt->data;
@@ -658,11 +624,8 @@ static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt)
         image.Strides[i] = frame->linesize[i];
     }
 
-    if (sdi->audio_stream) {
-        ret = get_frame_audio(s, sdi, &audio);
-        if (ret < 0)
-            return ret;
-    }
+    if (sdi->audio_stream)
+        convert_audio(sdi, &audio, nr_samples);
 
     ret = get_room(s, sdi);
     if (ret < 0)
@@ -678,11 +641,8 @@ static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt)
             DtSdiBuilder_Build(sdi->builder, sdi->view, NULL, NULL, NULL) != DTAPI_OK ||
             sdi->sink.commit(sdi->sink.opaque, sdi->view) < 0)
             return AVERROR(EINVAL);
-        sdi->next_pts += 1;
         return 0;
     }
-
-    sdi->next_pts += 1;
 
     if (sdi->sink.commit)
         return sdi->sink.commit(sdi->sink.opaque, sdi->view);
@@ -690,42 +650,37 @@ static int write_sdi_frame(struct AVFormatContext *s, AVPacket *arg_pkt)
     return 0;
 }
 
-/**
- * 
+/*
+ * Build every frame the pairing has ready, or with flush set every frame it holds. The
+ * builder says how many samples the next frame takes, which follows the cadence at a
+ * 1001 rate.
  */
-static int sdi_write_packet_internal(struct AVFormatContext *s)
+static int write_ready_frames(AVFormatContext *s, int flush)
 {
     SdiMuxContext *sdi = s->priv_data;
-    AVPacket pkt;
+    DtapiResult result;
     int ret;
-    for (int i = 0; i < s->nb_streams; i++) {
-        int64_t next_pts =
-            av_rescale_q_rnd(sdi->next_pts, sdi->time_base,
-                             s->streams[i]->time_base, AV_ROUND_UP);
-        int64_t duration = av_rescale_q_rnd(
-            1, sdi->time_base, s->streams[i]->time_base, AV_ROUND_UP);
-        if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            if (!ff_sdi_buffer_contains(sdi->buffer[i], next_pts, duration))
-                av_log(s, AV_LOG_DEBUG, "No video for (%"PRId64", %"PRId64")\n", next_pts,
-                       duration);
-            ret = ff_sdi_buffer_get_video(sdi->buffer[i], &pkt, next_pts, duration);
-            if (ret != 0) {
-                av_log(s, AV_LOG_DEBUG,
-                       "No video for (%"PRId64", %"PRId64"), ret=%d\n", next_pts,
-                       duration, ret);
-                return ret;
-            }
-        } else if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-            if (!ff_sdi_buffer_contains(sdi->buffer[i], next_pts, duration))
-                av_log(s, AV_LOG_DEBUG, "No audio for (%"PRId64", %"PRId64")\n", next_pts,
-                       duration);
+
+    for (;;) {
+        int nr_samples = 0;
+
+        if (sdi->audio_stream) {
+            result = DtSdiBuilder_GetNumAudioSamples(sdi->builder, sdi->vidstd, 0,
+                                                     &nr_samples);
+            if (result != DTAPI_OK)
+                return AVERROR(EINVAL);
         }
-    }
-    ret = write_sdi_frame(s, &pkt);
-    if (!ret)
+        if (!ff_sdi_pair_ready(sdi->pair, nr_samples, flush))
+            return 0;
+        ret = ff_sdi_pair_take(sdi->pair, sdi->image_pkt, sdi->audio_in, nr_samples);
+        if (ret < 0)
+            return ret;
+        ret = write_sdi_frame(s, sdi->image_pkt, nr_samples);
+        av_packet_unref(sdi->image_pkt);
+        if (ret < 0)
+            return ret;
         sdi->num_frames++;
-    av_packet_unref(&pkt);
-    return ret;
+    }
 }
 
 int av_sdi_mux_set_sink(AVFormatContext *s, const SdiFrameSink *sink)
@@ -739,113 +694,51 @@ int av_sdi_mux_set_sink(AVFormatContext *s, const SdiFrameSink *sink)
     return 0;
 }
 
-static int64_t to_stream_time(SdiMuxContext *sdi, int64_t sdi_pts,
-                              AVStream *stream)
-{
-    return av_rescale_q_rnd(sdi_pts, sdi->time_base, stream->time_base,
-                            AV_ROUND_UP);
-}
-static int64_t to_sdi_time(SdiMuxContext *sdi, int64_t stream_pts,
-                           AVStream *stream)
-{
-    return av_rescale_q_rnd(stream_pts, stream->time_base, sdi->time_base,
-                            AV_ROUND_UP);
-}
-
-/**
- * Buffer audio/video, write a single SDI frame if enough data collected.
+/*
+ * Hand the packet to the pairing, and build the frames that are then ready.
  */
 static int sdi_write_packet(AVFormatContext *s, AVPacket *pkt)
 {
     SdiMuxContext *sdi = s->priv_data;
-    AVCodecParameters *par = s->streams[pkt->stream_index]->codecpar;
     AVStream *stream = s->streams[pkt->stream_index];
-    int ret = 0;
-    int64_t pts = 0;
-    int has_enough = 1;
+    int ret;
 
-    // Buffer audio/video
-    if (pkt) {
-        SdiBuffer *buffer = sdi->buffer[pkt->stream_index];
-        int64_t expected_pts = buffer->last_pts + buffer->last_duration;
-        pts = pkt->pts;
-
-        if (par->codec_type == AVMEDIA_TYPE_AUDIO) {
-            // If the difference between the PTS and the expected PTS is exactly
-            // one sample there could be a rounding issue upstream.
-            int delta = pkt->pts - expected_pts;
-            if (delta == 1 || delta == -1) {
-                pkt->pts = expected_pts;
-            }
-        }
-
-        if (pkt->pts >= expected_pts || buffer->last_duration <= 0) {
-            ff_sdi_buffer_add(buffer, pkt);
-            if (sdi->next_pts == AV_NOPTS_VALUE && pts != AV_NOPTS_VALUE)
-                sdi->next_pts = to_sdi_time(sdi, pts, stream);
-        }
-        else {
-            av_log(s, AV_LOG_WARNING,
-                   "Packet dropped for stream %d (pts=%"PRId64", expected_pts=%"PRId64"\n",
-                   pkt->stream_index, pkt->pts, expected_pts);
-        }
-    }
-    else {
-        if (par->codec_type == AVMEDIA_TYPE_AUDIO) {
-            av_log(s, AV_LOG_DEBUG, "Null audio packet!");
-        } else if (par->codec_type == AVMEDIA_TYPE_VIDEO) {
-            av_log(s, AV_LOG_DEBUG, "Null video packet!");
-        }
-    }
-
-    for (int i = 0; i < s->nb_streams; ++i) {
-        int64_t sdi_pts = to_sdi_time(sdi, pts, stream);
-        int64_t packet_pts = to_stream_time(sdi, sdi_pts, s->streams[i]);
-        int64_t next_pts = to_stream_time(sdi, sdi->next_pts, s->streams[i]);
-        int64_t duration = to_stream_time(sdi, 1, s->streams[i]);
-        if (sdi->buffer[i]->last_pts < (packet_pts - sdi->buffer[i]->max_buffer)) {
-            has_enough = 0;
-            break;
-        }
-        if (!ff_sdi_buffer_contains(sdi->buffer[i], next_pts, duration)) {
-            has_enough = 0;
-            break;
-        }
-    }
-
-    // Construct new SDI frame if we have enough audio and video.
-    if (has_enough)
-    {
-        ret = sdi_write_packet_internal(s);
-        if (ret < 0)
-            return 0;
-    }
-
-    return ret;
+    if (stream == sdi->video_stream)
+        ret = ff_sdi_pair_add_video(sdi->pair, pkt, stream->time_base);
+    else if (stream == sdi->audio_stream)
+        ret = ff_sdi_pair_add_audio(sdi->pair, pkt, stream->time_base);
+    else
+        return 0;
+    if (ret < 0)
+        return ret;
+    return write_ready_frames(s, 0);
 }
 
-/**
- * Buffer audio/video and write SDI frame if enough data is collected.
- * 
- * If pkt is NULL flush the internal buffer.
+/*
+ * Write a packet. A flush, pkt NULL, builds nothing: a frame waits for its audio until
+ * the trailer.
  */
 static int sdi_write_flush_packet(struct AVFormatContext *s, AVPacket *pkt)
 {
-    if (!pkt) {
-        av_log(s, AV_LOG_ERROR, "Flushing not supported\n");
+    if (!pkt)
         return 1;
-    }
     return sdi_write_packet(s, pkt);
 }
 
 /*
- * Write num_frames and file_size in the file header.
+ * Build the frames still held, and write num_frames in the file header.
  */
 static int sdi_write_trailer(AVFormatContext *s)
 {
     AVIOContext *pb = s->pb;
     SdiMuxContext *sdi = s->priv_data;
     int64_t file_size;
+    int ret;
+
+    // The frames still waiting for their audio go out with what audio there is
+    ret = write_ready_frames(s, 1);
+    if (ret < 0)
+        return ret;
 
     if (s->pb->seekable & AVIO_SEEKABLE_NORMAL && !sdi->option_no_header) {
         file_size = avio_tell(pb);

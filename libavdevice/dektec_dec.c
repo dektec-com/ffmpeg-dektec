@@ -33,6 +33,7 @@
 #include "libavformat/internal.h"
 #include "libavformat/sdicommon.h"
 #include "libavformat/url.h"
+#include "libavutil/fifo.h"
 #include "libavutil/frame.h"
 #include "libavutil/internal.h"
 #include "libavutil/imgutils.h"
