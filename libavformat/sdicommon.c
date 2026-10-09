@@ -446,9 +446,15 @@ SdiFormat av_sdi_get_fmt(StandardOption *option)
     return SDI_FMT_NONE;
 }
 
+/*
+ * A stream copied from a file that does not store the field order, or the average frame
+ * rate, has neither: its field order is then the given standard's, and its rate its
+ * r_frame_rate.
+ */
 SdiFormat av_find_matching_standard(AVFormatContext *s, StandardOption *option, AVStream *stream)
 {
     int is_interlaced;
+    int field_known = 0;
     int width;
     int height;
     AVRational framerate;
@@ -475,19 +481,22 @@ SdiFormat av_find_matching_standard(AVFormatContext *s, StandardOption *option, 
         av_log(s, AV_LOG_DEBUG, "  Framerate    : %d/%d\n", option_rate.num, option_rate.den);
 
         if (option->scanning_mode == SDI_P_PICT_I_TR) {
-            if (stream && stream->codecpar->field_order != AV_FIELD_PROGRESSIVE) {
+            if (stream && stream->codecpar->field_order != AV_FIELD_UNKNOWN &&
+                stream->codecpar->field_order != AV_FIELD_PROGRESSIVE) {
                 av_log(s, AV_LOG_ERROR, "Scanning mode mismatch\n");
                 return SDI_FMT_NONE;
             }
         }
         else if (option->scanning_mode == SDI_I_PICT_I_TR) {
-            if (stream && stream->codecpar->field_order != AV_FIELD_TB) {
+            if (stream && stream->codecpar->field_order != AV_FIELD_UNKNOWN &&
+                stream->codecpar->field_order != AV_FIELD_TB) {
                 av_log(s, AV_LOG_ERROR, "Scanning mode mismatch\n");
                 return SDI_FMT_NONE;
             }
         }
         else if (option->scanning_mode == SDI_P_PICT_P_TR) {
-            if (stream && stream->codecpar->field_order != AV_FIELD_PROGRESSIVE) {
+            if (stream && stream->codecpar->field_order != AV_FIELD_UNKNOWN &&
+                stream->codecpar->field_order != AV_FIELD_PROGRESSIVE) {
                 av_log(s, AV_LOG_ERROR, "Scanning mode mismatch\n");
                 return SDI_FMT_NONE;
             }
@@ -500,9 +509,11 @@ SdiFormat av_find_matching_standard(AVFormatContext *s, StandardOption *option, 
             is_interlaced = 0;
         else
             is_interlaced = 1;
+        field_known = stream->codecpar->field_order != AV_FIELD_UNKNOWN;
         width = stream->codecpar->width;
         height = stream->codecpar->height;
-        framerate = stream->avg_frame_rate;
+        framerate = stream->avg_frame_rate.num ? stream->avg_frame_rate
+                                               : stream->r_frame_rate;
     }
 
     for (SdiFormat sdi_fmt = 0; sdi_fmt < SDI_FMT_NB; sdi_fmt++) {
@@ -544,7 +555,7 @@ SdiFormat av_find_matching_standard(AVFormatContext *s, StandardOption *option, 
                 continue;
             if (option->scanning_mode != info->scanning_method)
                 continue;
-            if (stream && (is_interlaced != sdi_is_interlaced))
+            if (stream && field_known && is_interlaced != sdi_is_interlaced)
                 continue;
 
             return sdi_fmt;
