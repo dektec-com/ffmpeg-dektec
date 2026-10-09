@@ -113,6 +113,7 @@ typedef struct DekTecDemuxContext {
 
     SdiUnpacker *unpacker;          // Takes each SDI frame apart where the card wrote it
     int vidstd;                     // The SDI standard's DTAPI_VIDSTD_ code
+    int warned_vidstd;              // Whether frames of another standard were logged
     int64_t frame_number;           // The number of the next frame taken apart
     AVPacket *queued[2 * PROBE_FRAMES]; // The packets of the frames read to find the streams
     int nb_queued;
@@ -195,14 +196,18 @@ static int take_frame(AVFormatContext *s, AVPacket *pkt)
                DtapiResult2Str(result));
         return AVERROR(EIO);
     }
-    // A signal of another standard does not fit the streams
+    // A signal of another standard does not fit the streams. That is logged once, and
+    // again once frames of the standard have come in between.
     DtSdiView_GetFormat(view, &vidstd, NULL);
     if (vidstd != context->vidstd) {
         DtInpChannel_ReleaseFrame(context->input, view);
-        TIMED_LOG(s, AV_LOG_WARNING, "A frame of another standard than %s is left out\n",
-                  context->sdi_info->name);
+        if (!context->warned_vidstd)
+            TIMED_LOG(s, AV_LOG_WARNING, "Frames of another standard than %s are left "
+                      "out\n", context->sdi_info->name);
+        context->warned_vidstd = 1;
         return AVERROR(EAGAIN);
     }
+    context->warned_vidstd = 0;
     ret = ff_sdi_unpacker_parse(context->unpacker, context->frame_number++, pkt);
     DtInpChannel_ReleaseFrame(context->input, view);
     return ret;
