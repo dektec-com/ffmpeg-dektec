@@ -72,6 +72,7 @@ typedef struct DekTecMuxContext {
     DtOutpChannel* output;
     int is_preloading;
     int64_t total_underflows;       // Times the card ran out of frames while sending
+    int64_t frames_sent;            // The SDI frames handed to the card
 
     void (*copy)(const AVFrame *src, AvFifo_Frame *dst);
     void (*copy_interlaced)(const AVFrame *src, AvFifo_Frame *field0, AvFifo_Frame *field1);
@@ -209,6 +210,7 @@ static int send_ready_frames(AVFormatContext *s, int flush)
                    DtapiResult2Str(result));
             return AVERROR(EIO);
         }
+        context->frames_sent++;
     }
     return ret;
 }
@@ -725,7 +727,10 @@ static int outpchannel_write_packet(AVFormatContext *s, AVPacket *pkt)
     // While frames are built in its buffer the channel fills in nothing: a frame that
     // comes too late leaves the card without data, and the receiver loses the signal.
     // The formatter reports that while it runs; a card that ran dry altogether reports
-    // it on its DMA side only.
+    // it on its DMA side only. The card then goes on when frames come again, on a frame
+    // grid of its own, and in 3G level B with each picture possibly in the other field.
+    // So the output starts again as it started: the frames in the FIFO are dropped, and
+    // it holds until the buffer is filled again.
     if (!context->is_preloading) {
         int flags = 0;
         int latched = 0;
@@ -735,9 +740,19 @@ static int outpchannel_write_packet(AVFormatContext *s, AVPacket *pkt)
             return -1;
         }
         if ((latched & (DTAPI_TX_FIFO_UFL | DTAPI_TX_DMA_UFL)) != 0) {
-            TIMED_LOG(s, AV_LOG_WARNING, "The card ran out of frames to send\n");
+            TIMED_LOG(s, AV_LOG_WARNING, "The card ran out of frames to send before "
+                      "frame %"PRId64": holding and starting again\n",
+                      context->frames_sent);
             context->total_underflows++;
-            DtOutpChannel_ClearFlags(context->output, latched);
+            result = DtOutpChannel_ClearFifo(context->output);
+            if (result == DTAPI_OK)
+                result = DtOutpChannel_SetTxControl(context->output, DTAPI_TXCTRL_HOLD);
+            if (result != DTAPI_OK) {
+                av_log(s, AV_LOG_ERROR, "Could not start DtOutpChannel again: %s\n",
+                       DtapiResult2Str(result));
+                return AVERROR(EIO);
+            }
+            context->is_preloading = 1;
         }
     }
 
