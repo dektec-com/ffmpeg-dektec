@@ -245,6 +245,18 @@ sdi_copy(){
     ffmpeg -i $(target_path $srcfile) -c copy -flags +bitexact -fflags +bitexact -f sdi md5:
 }
 
+# sdi_copy_std STANDARD ARGS... is sdi_copy with the sdi standard STANDARD for the copy,
+# which does not choose 3G level B by itself.
+sdi_copy_std(){
+    standard=$1
+    shift
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    ffmpeg -y "$@" -f sdi $(target_path $srcfile) || return
+    ffmpeg -i $(target_path $srcfile) -c copy -flags +bitexact -fflags +bitexact \
+        -sdi_standard $standard -f sdi md5:
+}
+
 # sdi_copy_v210 ARGS... is sdi_copy with the demuxer's video as v210 packets.
 sdi_copy_v210(){
     srcfile="${outdir}/${test}.sdi"
@@ -322,6 +334,44 @@ dektec_sdi_copy_out(){
     CDTAPI_SIM=1 CDTAPI_SIM_SDI_SINK=$port:$(dektec_env_path $sinkfile) \
         ffmpeg -i $(target_path $srcfile) -c copy -f dektec 9217800001:$port || return
     do_md5sum $sinkfile | awk '{print $1}'
+}
+
+# dektec_sdi_copy_out_std PORT STANDARD ARGS... is dektec_sdi_copy_out with the sdi
+# standard STANDARD for the file and the port, which a copy does not choose by itself
+# when it is 3G level B.
+dektec_sdi_copy_out_std(){
+    port=$1
+    standard=$2
+    shift 2
+    srcfile="${outdir}/${test}.src.sdi"
+    sinkfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile $sinkfile"
+    rm -f $sinkfile
+    ffmpeg -y "$@" -sdi_standard $standard -f sdi $(target_path $srcfile) || return
+    CDTAPI_SIM=1 CDTAPI_SIM_SDI_SINK=$port:$(dektec_env_path $sinkfile) \
+        ffmpeg -i $(target_path $srcfile) -c copy -sdi_standard $standard \
+        -f dektec 9217800001:$port || return
+    do_md5sum $sinkfile | awk '{print $1}'
+}
+
+# dektec_sdi_loop VIDSTD STANDARD FRAMES ARGS... sends ARGS' output in the sdi standard
+# STANDARD through port 3 into a file, plays that file on port 1 as the video standard
+# VIDSTD, a DTAPI_VIDSTD_ name, and gives the framemd5 of the first FRAMES video frames
+# port 1 receives, and the audio with them. The file holds what the card sent, as the
+# emulated card's source takes it, and the source waits for the reads, so that a slow
+# build misses no frame.
+dektec_sdi_loop(){
+    vidstd=$1
+    standard=$2
+    frames=$3
+    shift 3
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    rm -f $srcfile
+    CDTAPI_SIM=1 CDTAPI_SIM_SDI_SINK=3:$(dektec_env_path $srcfile) \
+        ffmpeg "$@" -sdi_standard $standard -f dektec 9217800001:3 || return
+    CDTAPI_SIM=1 CDTAPI_SIM_REALTIME=0 CDTAPI_SIM_SDI_SOURCE=1:$vidstd:$(dektec_env_path $srcfile) \
+        framemd5 -f dektec -i 9217800001:1 -frames:v $frames -map 0 -c:v rawvideo -c:a pcm_s24le
 }
 
 # dektec_sdi_in VIDSTD FRAMES ARGS... makes frames of the video standard VIDSTD, a

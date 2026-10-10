@@ -1,0 +1,34 @@
+#format: frame checksums
+#version: 2
+#hash: MD5
+#tb 0: 1001/60000
+#media_type 0: video
+#codec_id 0: rawvideo
+#dimensions 0: 1920x1080
+#sar 0: 0/1
+#tb 1: 1/48000
+#media_type 1: audio
+#codec_id 1: pcm_s24le
+#sample_rate 1: 48000
+#channel_layout_name 1: mono
+#stream#, dts,        pts, duration,     size, hash
+0,          0,          0,        1,  8294400, 0d598bcbad4f061c970b4eb5b5aabb3e
+1,          0,          0,      802,     2406, 4a71db2a16ba2b9b0c85a7059f469b51
+0,          1,          1,        1,  8294400, 15ff705e76392d3e035ac780e8dbd3df
+1,        802,        802,      800,     2400, 11f79d108d4158911b8e01415544f6cf
+0,          2,          2,        1,  8294400, 56f237aa6ffe1c55b2b77697f1a0316b
+1,       1602,       1602,      801,     2403, 552bb20173d0ce0f8706645879afb97e
+0,          3,          3,        1,  8294400, 1ab08eadb040ba17bc38ba8e53afcebb
+1,       2403,       2403,      800,     2400, 0a121067e07e3bcfb5a7711b2275a2e7
+1,       3203,       3203,      802,     2406, 171fed0db263859704b0a7217961b7e0
+0,          4,          4,        1,  8294400, 80eb3b06947f625c62d82056e75cb16a
+0,          5,          5,        1,  8294400, 7682f3ebc4cfc5d6bb0fa98bdc1bf0df
+1,       4005,       4005,      800,     2400, 6fa0a7909d662d0b5912c9fa968f2866
+0,          6,          6,        1,  8294400, d10ed455048e2b4875744c98b6e4e63f
+1,       4805,       4805,      801,     2403, b1ec5ea70bd130e6561cfb9a47fe9e06
+0,          7,          7,        1,  8294400, f9fe780dc016b033a6377962ac49c265
+1,       5606,       5606,      800,     2400, cbd7669ab948824de4dd68a4495916dd
+1,       6406,       6406,      802,     2406, 47791499e0882c9102304f926d8f9cf1
+0,          8,          8,        1,  8294400, 904dc9e37f26289077016945eff35385
+0,          9,          9,        1,  8294400, 6e6cb12edaf96cd449804752d0d8a034
+1,       7208,       7208,      800,     2400, 04e4ac903f52edf80a584aca2bbbd4de

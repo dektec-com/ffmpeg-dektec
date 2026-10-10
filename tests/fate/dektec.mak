@@ -100,6 +100,32 @@ fate-dektec-sdi-in-2160p30: CMD = dektec_sdi_in 2160P30 3 $(call DEKTEC_SRC_STIL
 FATE_DEKTEC_IN += fate-dektec-sdi-in-2160p50
 fate-dektec-sdi-in-2160p50: CMD = dektec_sdi_in 2160P50 5 $(call DEKTEC_SRC_STILL_4K,3840x2160,50,$(DEKTEC_VF_P))
 
+# 3G level B, sent as the card holds it, a picture of level A at a time with the field
+# the channel sets: from a source and copied from an .sdi file, which must send the
+# same. The emulated card's sink and source hold those pictures, not the frames of the
+# interface an .sdi file holds, so the input receives what the output sent, at the pace
+# of its reads.
+FATE_DEKTEC_OUT += fate-dektec-sdi-out-1080p50b
+fate-dektec-sdi-out-1080p50b: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,1920x1080,50,$(DEKTEC_VF_P)) -sdi_standard 3GB1080p50
+fate-dektec-sdi-out-1080p50b: CMP = oneline
+fate-dektec-sdi-out-1080p50b: REF = 827cd0f837d4a4883847a0bb18ce10ee
+
+FATE_DEKTEC_OUT += fate-dektec-sdi-out-1080p59_94b
+fate-dektec-sdi-out-1080p59_94b: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,1920x1080,60000/1001,$(DEKTEC_VF_P)) -sdi_standard 3GB1080p59_94
+fate-dektec-sdi-out-1080p59_94b: CMP = oneline
+fate-dektec-sdi-out-1080p59_94b: REF = 1b67f8ac61ec4de7567e52df49f4a1ef
+
+FATE_DEKTEC_COPY += fate-dektec-sdi-copy-out-1080p59_94b
+fate-dektec-sdi-copy-out-1080p59_94b: CMD = dektec_sdi_copy_out_std 3 3GB1080p59_94 $(call DEKTEC_SRC,1920x1080,60000/1001,$(DEKTEC_VF_P))
+fate-dektec-sdi-copy-out-1080p59_94b: CMP = oneline
+fate-dektec-sdi-copy-out-1080p59_94b: REF = 1b67f8ac61ec4de7567e52df49f4a1ef
+
+FATE_DEKTEC_LOOP += fate-dektec-sdi-in-1080p50b
+fate-dektec-sdi-in-1080p50b: CMD = dektec_sdi_loop 1080P50B 3GB1080p50 10 $(call DEKTEC_SRC,1920x1080,50,$(DEKTEC_VF_P))
+
+FATE_DEKTEC_LOOP += fate-dektec-sdi-in-1080p59_94b
+fate-dektec-sdi-in-1080p59_94b: CMD = dektec_sdi_loop 1080P59_94B 3GB1080p59_94 10 $(call DEKTEC_SRC,1920x1080,60000/1001,$(DEKTEC_VF_P))
+
 DEKTEC_SRC_DEPS = LAVFI_INDEV TESTSRC_FILTER SMPTEHDBARS_FILTER SINE_FILTER \
                   SETFIELD_FILTER SCALE_FILTER FORMAT_FILTER ARESAMPLE_FILTER AFORMAT_FILTER \
                   WRAPPED_AVFRAME_ENCODER PCM_S24LE_ENCODER
@@ -107,6 +133,7 @@ DEKTEC_SRC_DEPS = LAVFI_INDEV TESTSRC_FILTER SMPTEHDBARS_FILTER SINE_FILTER \
 FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_OUT)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV SDI_MUXER FRAMEMD5_MUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_IN)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV SDI_MUXER SDI_DEMUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_COPY)
+FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV DEKTEC_OUTDEV FRAMEMD5_MUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_LOOP)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV DEKTEC_OUTDEV SDI_MUXER FRAMEMD5_MUXER V210_ENCODER V210_DECODER \
                            $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_V210)
 

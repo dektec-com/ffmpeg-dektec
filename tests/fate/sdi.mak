@@ -332,6 +332,41 @@ fate-sdi-nocrc-2160p59_94: REF = b58a734b365039e7e788b62079f33be0
 FATE_SDI_RT += fate-sdi-noheader-1080i59_94
 fate-sdi-noheader-1080i59_94: CMD = sdi_roundtrip_noheader HD1080i29_97 $(call SDI_SRC_A,1920x1080,30000/1001,$(SDI_VF_I),stereo,,HD1080i)
 
+# 3G level B, whose frames are frames of the interface with two pictures each: the
+# file, once from the source and once copied, with the standard given, as a copy
+# chooses level B only when asked; the round trip, field 1 and field 2 of
+# each frame with the audio each carries; an odd number of pictures, whose last frame
+# gets a black field 2; and frames without the header.
+SDI_REF_B_1080P50 = 416a99d5a32798ec538e90821753238d
+FATE_SDI_A += fate-sdi-audio-1080p50b
+fate-sdi-audio-1080p50b: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,50,$(SDI_VF_P),stereo,,3GB1080p) -f sdi md5:
+fate-sdi-audio-1080p50b: CMP = oneline
+fate-sdi-audio-1080p50b: REF = $(SDI_REF_B_1080P50)
+
+SDI_REF_B_1080P59_94 = cd5f45aaeac30c9557171bc3d442b7c0
+FATE_SDI_A += fate-sdi-audio-1080p59_94b
+fate-sdi-audio-1080p59_94b: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,60000/1001,$(SDI_VF_P),stereo,,3GB1080p) -f sdi md5:
+fate-sdi-audio-1080p59_94b: CMP = oneline
+fate-sdi-audio-1080p59_94b: REF = $(SDI_REF_B_1080P59_94)
+FATE_SDI_A += fate-sdi-copy-1080p59_94b
+fate-sdi-copy-1080p59_94b: CMD = sdi_copy_std 3GB1080p $(call SDI_SRC_A,1920x1080,60000/1001,$(SDI_VF_P),stereo,,3GB1080p)
+fate-sdi-copy-1080p59_94b: CMP = oneline
+fate-sdi-copy-1080p59_94b: REF = $(SDI_REF_B_1080P59_94)
+
+FATE_SDI_A += fate-sdi-audio-1080p60b
+fate-sdi-audio-1080p60b: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,60,$(SDI_VF_P),stereo,,3GB1080p) -f sdi md5:
+fate-sdi-audio-1080p60b: CMP = oneline
+fate-sdi-audio-1080p60b: REF = 20766b1b267c36d6e54381b948f9d920
+
+FATE_SDI_RT += fate-sdi-roundtrip-1080p50b
+fate-sdi-roundtrip-1080p50b: CMD = sdi_roundtrip $(call SDI_SRC_A,1920x1080,50,$(SDI_VF_P),stereo,,3GB1080p)
+FATE_SDI_RT += fate-sdi-roundtrip-1080p59_94b
+fate-sdi-roundtrip-1080p59_94b: CMD = sdi_roundtrip $(call SDI_SRC_A,1920x1080,60000/1001,$(SDI_VF_P),stereo,,3GB1080p)
+FATE_SDI_RT += fate-sdi-roundtrip-odd-1080p59_94b
+fate-sdi-roundtrip-odd-1080p59_94b: CMD = sdi_roundtrip $(call SDI_SRC_A,1920x1080,60000/1001,$(SDI_VF_P),stereo,,3GB1080p) -frames:v 23
+FATE_SDI_RT += fate-sdi-noheader-1080p50b
+fate-sdi-noheader-1080p50b: CMD = sdi_roundtrip_noheader 3GB1080p50 $(call SDI_SRC_A,1920x1080,50,$(SDI_VF_P),stereo,,3GB1080p)
+
 # The muxer's own conversion: a 1280x720 yuv420p source into 1080i.
 SDI_VF_I_420 = setfield=tff,scale,format=yuv420p
 FATE_SDI_A += fate-sdi-scale-1080i50
