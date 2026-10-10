@@ -40,6 +40,9 @@
 /* The bytes of a sample the unpacker's audio stream carries. */
 #define UNPACKED_SAMPLE_SIZE 3
 
+/* The most places of an audio cadence: ten pictures of 3G level B at 59.94 Hz. */
+#define MAX_CADENCE 10
+
 /*
  * Start the worker pool that the threads option asks for. Sets *pool to NULL when the
  * option asks for one thread, and *num_threads to the threads a frame is divided over,
@@ -83,6 +86,7 @@ struct SdiUnpacker {
     void *log_ctx;
     const struct SdiInfo *info;
     int vidstd;                 ///< the standard's DTAPI_VIDSTD_ code
+    int level_b;                ///< whether it is 3G level B, whose frames are pictures
     AVRational frame_rate;
     DtSdiView *view;            ///< the frame to take apart, which the caller points
     DtSdiParser *parser;
@@ -99,6 +103,10 @@ struct SdiUnpacker {
     int present[FF_SDI_AUDIO_MAX_CHANNELS];  ///< whether that frame carried each channel
     int samples[FF_SDI_AUDIO_MAX_CHANNELS];  ///< and the samples it carried on it
     int64_t frame_number;       ///< that frame's number
+    int cadence_place;          ///< and its place in the audio cadence, 0 for none
+
+    int cadence_length;         ///< the places of the standard's cadence, 0 for none
+    int cadence_offset[MAX_CADENCE + 1]; ///< the samples of a cycle before each place
 
     AVStream *audio_stream;     ///< the audio stream, or NULL
     int stream_channels;        ///< its channels
@@ -126,6 +134,7 @@ int ff_sdi_unpacker_alloc(SdiUnpacker **unpacker, void *log_ctx,
 {
     SdiUnpacker *u;
     DtWorkerPool *pool = NULL;
+    DtSdiBuilder *builder;
     int num_threads = 0;
     DtapiResult result;
     int ret;
@@ -136,6 +145,7 @@ int ff_sdi_unpacker_alloc(SdiUnpacker **unpacker, void *log_ctx,
     u->log_ctx = log_ctx;
     u->info = info;
     u->vidstd = av_sdi_vidstd(info);
+    u->level_b = av_sdi_is_level_b(info);
     u->frame_rate = av_sdi_rate(info->picture_rate);
 
     u->view = DtSdiView_Alloc();
@@ -176,6 +186,23 @@ int ff_sdi_unpacker_alloc(SdiUnpacker **unpacker, void *log_ctx,
             return AVERROR(ENOMEM);
         }
     }
+
+    // The samples of each place of the standard's audio cadence, as a builder puts
+    // them in; a rate without a cadence has none
+    builder = DtSdiBuilder_Alloc();
+    if (!builder)
+        return AVERROR(ENOMEM);
+    for (int place = 1, sum = 0; place <= MAX_CADENCE; place++) {
+        int nb_samples = 0;
+
+        if (DtSdiBuilder_GetNumAudioSamples(builder, u->vidstd, place, &nb_samples) !=
+            DTAPI_OK)
+            break;
+        u->cadence_offset[place] = sum;
+        u->cadence_length = place;
+        sum += nb_samples;
+    }
+    DtSdiBuilder_Freep(&builder);
 
     // Room for the most samples a frame of the standard carries, on every channel
     result = DtSdiAudio_MaxSamples(u->vidstd, &u->max_samples);
@@ -265,7 +292,28 @@ static void prepare_audio(SdiUnpacker *u)
         memset(samples + from, 0, (size_t)(u->nb_samples - from) * sizeof(*samples));
     }
     u->audio_waiting = u->nb_samples > 0;
-    u->audio_pts = frame_first_sample(u->frame_rate, u->frame_number);
+    if (u->cadence_place > 0 && u->cadence_place <= u->cadence_length) {
+        // A frame of a 1001 rate carries its place in the cadence, and the samples come
+        // after those of the places before it in the cycle. So the timestamps follow
+        // what the frames carry, from whichever place the frames start.
+        int64_t start = u->frame_number - (u->cadence_place - 1);
+
+        u->audio_pts = frame_first_sample(u->frame_rate, start) +
+                       u->cadence_offset[u->cadence_place];
+    } else if (u->level_b) {
+        // The interface's frames, of half the picture rate, follow the cadence, and its
+        // two pictures share a frame's samples unequally: field 1 starts with the frame,
+        // and field 2 ends with it.
+        AVRational interface_rate = { u->frame_rate.num, u->frame_rate.den * 2 };
+        int64_t frame = u->frame_number / 2;
+
+        if (u->frame_number % 2 == 0)
+            u->audio_pts = frame_first_sample(interface_rate, frame);
+        else
+            u->audio_pts = frame_first_sample(interface_rate, frame + 1) - u->nb_samples;
+    } else {
+        u->audio_pts = frame_first_sample(u->frame_rate, u->frame_number);
+    }
 }
 
 int ff_sdi_unpacker_add_audio_stream(SdiUnpacker *unpacker, AVFormatContext *s,
@@ -389,6 +437,7 @@ image_done:
             u->nb_channels = ch + 1;
     }
     u->frame_number = frame_number;
+    u->cadence_place = audio.FrameNumber;
     prepare_audio(u);
     return 0;
 }

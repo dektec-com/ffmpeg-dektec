@@ -60,6 +60,12 @@ typedef struct SDIDemuxContext {
     uint8_t *frame_buf;    ///< the frame being read
     SdiUnpacker *unpacker; ///< takes each frame apart into its image and audio
     int has_audio;         ///< whether the audio stream was added
+
+    // 3G level B: a frame of the file is a frame of the interface with two pictures,
+    // field 1 and field 2, which go out as two images
+    int level_b;           ///< whether the standard is 3G level B
+    int field2_waiting;    ///< whether field 2 of the frame read last is to go out
+    int64_t frame_pos;     ///< where that frame starts in the file
 } SDIDemuxContext;
 
 /* Test if we have a DekTec SDI file */
@@ -82,7 +88,10 @@ static int sdi_probe(const AVProbeData *p)
 }
 
 /*
- * Return sdi info for a given header, or NULL if not found
+ * Return sdi info for a given header, or NULL if not found. A header of 3G level B
+ * describes a frame of the interface, of two fields, which carries progressive
+ * pictures, so it finds a standard of level B by its pictures alone; any other finds one
+ * that is not level B.
  */
 static const struct SdiInfo *find_standard_from_sdi(AVFormatContext *s, struct SdiFileHeader *hdr)
 {
@@ -96,9 +105,13 @@ static const struct SdiInfo *find_standard_from_sdi(AVFormatContext *s, struct S
     const int bit_depth = hdr->logical_frame_properties.bit_depth;
     const int picture_width = hdr->logical_frame_properties.picture_width;
     const int picture_height = hdr->logical_frame_properties.picture_height;
+    const int level_b = hdr->format.line_rate == SDI_LINE_RATE_3G &&
+                        hdr->format.sdi_level == SDI_LEVEL_B_DL;
 
     SdiScanningMethod scanning_method;
-    if (interlaced_picture && interlaced_transport)
+    if (level_b)
+        scanning_method = interlaced_picture ? SDI_I_PICT_I_TR : SDI_P_PICT_P_TR;
+    else if (interlaced_picture && interlaced_transport)
         scanning_method = SDI_I_PICT_I_TR;
     else if (!interlaced_picture && interlaced_transport)
         scanning_method = SDI_P_PICT_I_TR;
@@ -125,6 +138,8 @@ static const struct SdiInfo *find_standard_from_sdi(AVFormatContext *s, struct S
     av_log(s, AV_LOG_DEBUG, "  picture_height: %d\n", picture_height);
 
     for (const struct SdiInfo *info = NULL; info = av_sdi_info(i); i++) {
+        if (av_sdi_is_level_b(info) != level_b)
+            continue;
         if (av_cmp_q(av_sdi_aspect_ratio(info->aspect_ratio), aspect_ratio) != 0)
              continue;
         if (av_cmp_q(av_sdi_rate(info->picture_rate), picture_rate) != 0)
@@ -187,13 +202,16 @@ static int sdi_setup(AVFormatContext *s)
     sdi->frame_buf = av_malloc(sdi->frame_size);
     if (!sdi->frame_buf)
         return AVERROR(ENOMEM);
+    sdi->level_b = av_sdi_is_level_b(sdi_info);
 
     ret = ff_sdi_unpacker_alloc(&sdi->unpacker, s, sdi_info, sdi->threads, sdi->v210);
     if (ret < 0)
         return ret;
     log_setup(s);
+    // In 3G level B each frame gives two images
     ret = ff_sdi_unpacker_add_video_stream(sdi->unpacker, s,
-            FFMAX(avio_size(s->pb) - sdi->header_size, 0) / sdi->frame_size);
+            FFMAX(avio_size(s->pb) - sdi->header_size, 0) / sdi->frame_size *
+            (sdi->level_b ? 2 : 1));
     if (ret < 0)
         return ret;
 
@@ -281,6 +299,7 @@ static int sdi_read_header(AVFormatContext *s)
 
     SDIDemuxContext *sdi = s->priv_data;
     int n = 0;
+    size_t raw_size = 0;
 
     uint8_t buffer[1024];
 
@@ -305,8 +324,11 @@ static int sdi_read_header(AVFormatContext *s)
             av_log(s, AV_LOG_WARNING, "SDI standard %s is not supported\n", sdi->option_standard);
             return AVERROR(EINVAL);
         }
-        sdi->frame_size = (sdi->sdi_info->nr_sdi_lines *
-                (sdi->sdi_info->nr_hanc_symbols + sdi->sdi_info->nr_vanc_symbols) * 10 / 8 + 7) & ~7;
+        // A frame of the file is the standard's raw frame, in 3G level B a frame of
+        // the interface
+        if (DtSdiView_RawFrameSize(av_sdi_vidstd(sdi->sdi_info), 10, &raw_size) != DTAPI_OK)
+            return AVERROR(EINVAL);
+        sdi->frame_size = (int)raw_size;
         sdi->header_size = 0;
     }
     else {
@@ -314,6 +336,13 @@ static int sdi_read_header(AVFormatContext *s)
 
         init_get_bits(&gb, buffer, 1024);
         get_sdi_file_header(&gb, &hdr);
+
+        if (hdr.format.line_rate == SDI_LINE_RATE_3G &&
+            hdr.format.sdi_level == SDI_LEVEL_B_DS) {
+            av_log(s, AV_LOG_ERROR, "3G level B dual stream, two streams on one link, is "
+                   "not supported\n");
+            return AVERROR_PATCHWELCOME;
+        }
 
         // Retrieve image properties from header
         sdi->sdi_info = find_standard_from_sdi(s, &hdr);
@@ -337,19 +366,41 @@ static int sdi_read_header(AVFormatContext *s)
  * Read one packet: the image of the next frame in the file, which CDTAPI's parser takes
  * apart, or the frame's audio, which goes out with the next call. The audio stream is
  * added with the first frame that carries audio, in the frame's channels.
+ *
+ * In 3G level B a frame of the file holds two pictures: field 1's image and audio go
+ * out, then field 2's, each numbered as a picture, field 1 even and field 2 odd.
  */
 static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
     SDIDemuxContext *sdi = s->priv_data;
     DtapiResult result;
     int64_t pos;
+    int64_t frame_number;
     int ret;
 
     ret = ff_sdi_unpacker_audio(sdi->unpacker, pkt);
     if (ret != 0)
         return ret < 0 ? ret : 0;
 
+    // Field 2 of the frame read last, unless a seek went elsewhere since
     pos = avio_tell(s->pb);
+    if (sdi->field2_waiting && pos == sdi->frame_pos + sdi->frame_size) {
+        sdi->field2_waiting = 0;
+        result = DtSdiView_SetLevelBField(ff_sdi_unpacker_view(sdi->unpacker), 2);
+        if (result != DTAPI_OK) {
+            av_log(s, AV_LOG_ERROR, "Could not point the parser at field 2: %s\n",
+                   DtapiResult2Str(result));
+            return AVERROR_INVALIDDATA;
+        }
+        frame_number = (sdi->frame_pos - sdi->header_size) / sdi->frame_size * 2 + 1;
+        ret = ff_sdi_unpacker_parse(sdi->unpacker, frame_number, pkt);
+        if (ret < 0)
+            return ret;
+        pkt->pos = sdi->frame_pos;
+        goto parsed;
+    }
+    sdi->field2_waiting = 0;
+
     ret = avio_read(s->pb, sdi->frame_buf, sdi->frame_size);
     if (ret < 0)
         return ret;
@@ -363,12 +414,20 @@ static int sdi_read_packet(AVFormatContext *s, AVPacket *pkt)
         return AVERROR_INVALIDDATA;
     }
 
-    ret = ff_sdi_unpacker_parse(sdi->unpacker, (pos - sdi->header_size) / sdi->frame_size,
-                                pkt);
+    // The view starts with field 1 of a frame of level B
+    frame_number = (pos - sdi->header_size) / sdi->frame_size;
+    if (sdi->level_b)
+        frame_number *= 2;
+    ret = ff_sdi_unpacker_parse(sdi->unpacker, frame_number, pkt);
     if (ret < 0)
         return ret;
     pkt->pos = pos;
+    if (sdi->level_b) {
+        sdi->field2_waiting = 1;
+        sdi->frame_pos = pos;
+    }
 
+parsed:
     if (!sdi->has_audio && ff_sdi_unpacker_nb_channels(sdi->unpacker) > 0) {
         ret = ff_sdi_unpacker_add_audio_stream(sdi->unpacker, s,
                                                ff_sdi_unpacker_nb_channels(sdi->unpacker));

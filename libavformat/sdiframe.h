@@ -99,6 +99,14 @@ int ff_sdi_unpacker_add_audio_stream(SdiUnpacker *unpacker, AVFormatContext *s,
  * as its timestamp, and its audio waits for ff_sdi_unpacker_audio(). The view may point
  * elsewhere once this returns.
  *
+ * In 3G level B the view describes one picture, field 1 or field 2 of a frame of the
+ * interface, and frame_number counts pictures: even for field 1 and odd for field 2.
+ *
+ * The audio's timestamp is the number of its first sample: from the frame's place in
+ * the audio cadence of a 1001 rate, which the frame carries, so that the timestamps
+ * follow the samples from whichever place the frames start; or else from frame_number,
+ * in 3G level B with field 1 starting a frame of the interface and field 2 ending it.
+ *
  * @return 0, or a negative error code
  */
 int ff_sdi_unpacker_parse(SdiUnpacker *unpacker, int64_t frame_number, AVPacket *pkt);
