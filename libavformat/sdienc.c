@@ -62,6 +62,10 @@ typedef struct SdiMuxContext {
     int frame_size;                 ///< size of a frame, padding included
     SdiPacker *packer;              ///< puts each frame together in frame_buf
     int num_frames;
+
+    // 3G level B: a frame of the file is a frame of the interface, field 1 and field 2
+    int level_b;                    ///< whether the standard is 3G level B
+    int field2_due;                 ///< whether frame_buf holds field 1, waiting for 2
 } SdiMuxContext;
 
 static int put_sdi_format(struct PutBitContext *pb, struct Format *format)
@@ -165,17 +169,18 @@ static struct SdiFileHeader make_sdi_file_header(struct AVFormatContext *s, SdiM
     struct SdiFileHeader hdr;
     struct PhysicalFieldProperties *field_props;
     const struct SdiInfo *sdi_info = sdi->sdi_info;
-    int sdi_frame_size = sdi_info->nr_sdi_lines *
-            (sdi_info->nr_hanc_symbols + sdi_info->nr_vanc_symbols) * 10 / 8;
+    // A frame of 3G level B is a frame of the interface: an interlaced 1080-line frame
+    // whose lines hold the words of two links
+    const struct SdiInfo *transport = sdi->level_b ? av_sdi_info(SDI_FMT_1080I50) : sdi_info;
+    int links = sdi->level_b ? 2 : 1;
 
     hdr.magic_code = SDI_MAGIC;
     hdr.version = 0;
     hdr.header_size = 0; // Is calculated at the end of this function
     hdr.num_physical_links = 1;
-    hdr.frame_size = (sdi_frame_size + 7) & ~7;   // align to 8-byte
+    hdr.frame_size = sdi->frame_size;
     hdr.num_frames = 0; // Is written in sdi_write_trailer()
     hdr.compression_mode = SDI_COMPRESSION_MODE_NONE;
-    sdi->frame_padding = hdr.frame_size - sdi_frame_size;
 
     switch (sdi_info->payload_format) {
     case 0x81:
@@ -193,6 +198,11 @@ static struct SdiFileHeader make_sdi_file_header(struct AVFormatContext *s, SdiM
         hdr.format.line_rate = SDI_LINE_RATE_3G;
         hdr.format.interleaving_type = SDI_INTERLEAVING_TYPE_NONE;
         hdr.format.sdi_level = SDI_LEVEL_A;
+        break;
+    case 0x8A:
+        hdr.format.line_rate = SDI_LINE_RATE_3G;
+        hdr.format.interleaving_type = SDI_INTERLEAVING_TYPE_NONE;
+        hdr.format.sdi_level = SDI_LEVEL_B_DL;
         break;
     case 0xC0:
         hdr.format.line_rate = SDI_LINE_RATE_6G;
@@ -216,14 +226,14 @@ static struct SdiFileHeader make_sdi_file_header(struct AVFormatContext *s, SdiM
     hdr.logical_frame_properties.picture_height = sdi_info->picture_height;
 
     field_props = hdr.physical_frame_properties.field_properties;
-    if (is_interlaced_transport(sdi_info->scanning_method)) {
-        field_props[0].num_lines_field = (sdi_info->end_line_field1 - sdi_info->start_line_field1) + 1;
-        field_props[0].first_video_line = sdi_info->vid_start_line_field1;
-        field_props[0].num_lines_video = (sdi_info->vid_end_line_field1 - sdi_info->vid_start_line_field1) + 1;
+    if (is_interlaced_transport(transport->scanning_method)) {
+        field_props[0].num_lines_field = (transport->end_line_field1 - transport->start_line_field1) + 1;
+        field_props[0].first_video_line = transport->vid_start_line_field1;
+        field_props[0].num_lines_video = (transport->vid_end_line_field1 - transport->vid_start_line_field1) + 1;
 
-        field_props[1].num_lines_field = (sdi_info->end_line_field2 - sdi_info->start_line_field2) + 1;
-        field_props[1].first_video_line = sdi_info->vid_start_line_field2 - sdi_info->start_line_field2;
-        field_props[1].num_lines_video = (sdi_info->vid_end_line_field2 - sdi_info->vid_start_line_field2) + 1;
+        field_props[1].num_lines_field = (transport->end_line_field2 - transport->start_line_field2) + 1;
+        field_props[1].first_video_line = transport->vid_start_line_field2 - transport->start_line_field2;
+        field_props[1].num_lines_video = (transport->vid_end_line_field2 - transport->vid_start_line_field2) + 1;
 
         hdr.physical_frame_properties.num_fields = 2;
     } else {
@@ -236,8 +246,8 @@ static struct SdiFileHeader make_sdi_file_header(struct AVFormatContext *s, SdiM
 
     hdr.physical_frame_properties.crc_omitted = sdi->option_calc_crc == 0;
     hdr.physical_frame_properties.num_lines_frame = sdi_info->nr_sdi_lines;
-    hdr.physical_frame_properties.num_syms_hanc = sdi_info->nr_hanc_symbols;
-    hdr.physical_frame_properties.num_syms_vanc_video = sdi_info->nr_vanc_symbols;
+    hdr.physical_frame_properties.num_syms_hanc = links * sdi_info->nr_hanc_symbols;
+    hdr.physical_frame_properties.num_syms_vanc_video = links * sdi_info->nr_vanc_symbols;
 
     hdr.header_size = ((put_sdi_file_header(NULL, &hdr) >> 3) + 7) & ~7;
 
@@ -274,8 +284,7 @@ static int sdi_init(AVFormatContext *s)
     SdiFormat standard = SDI_FMT_NONE;
     AVStream *audio_stream = NULL;
     AVStream *video_stream = NULL;
-    int sdi_frame_size;
-    int aligned_frame_size;
+    size_t raw_size;
 
     for (int i = 0; i < s->nb_streams; i++) {
         if (s->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -328,25 +337,23 @@ static int sdi_init(AVFormatContext *s)
         return AVERROR(EINVAL);
     }
     sdi->sdi_info = sdi_info = av_sdi_info(standard);
-    if (av_sdi_is_level_b(sdi_info)) {
-        av_log(s, AV_LOG_ERROR, "The sdi format does not take 3G level B yet\n");
-        return AVERROR_PATCHWELCOME;
-    }
     sdi->vidstd = av_sdi_vidstd(sdi_info);
+    sdi->level_b = av_sdi_is_level_b(sdi_info);
 
     av_log(s, AV_LOG_DEBUG, "SDI standard: %s\n", sdi_info->name);
 
-    sdi_frame_size = sdi_info->nr_sdi_lines * (sdi_info->nr_hanc_symbols + sdi_info->nr_vanc_symbols) * 10 / 8;
-    aligned_frame_size = (sdi_frame_size + 7) & ~7; // align to 8-byte
-    sdi->frame_padding = aligned_frame_size - sdi_frame_size;
-
-    // CDTAPI's builder puts the frames together, in a buffer whose padding stays zero
+    // CDTAPI's builder puts the frames together, in a buffer whose padding stays zero.
+    // The frames of a file start at place 1 of the audio cadence, and in level B with
+    // field 1.
     ret = ff_sdi_packer_alloc(&sdi->packer, s, sdi_info, sdi->threads,
                               sdi->option_calc_crc, video_stream, audio_stream,
                               sdi->option_audio_nr_ch);
     if (ret < 0)
         return ret;
-    sdi->frame_size = ff_sdi_packer_frame_size(sdi->packer);
+    ff_sdi_packer_count_places(sdi->packer);
+    raw_size = ff_sdi_packer_frame_size(sdi->packer);
+    sdi->frame_size = (raw_size + 7) & ~7; // align to 8-byte
+    sdi->frame_padding = sdi->frame_size - raw_size;
     sdi->frame_buf = av_mallocz(sdi->frame_size);
     if (!sdi->frame_buf)
         return AVERROR(ENOMEM);
@@ -375,24 +382,49 @@ static int sdi_write_sdi_header(AVFormatContext *s)
 
 /*
  * Build every frame the packer has ready, or with flush set every frame it holds, and
- * write it to the output.
+ * write it to the output. In 3G level B a frame of the file holds two pictures, built
+ * one after the other: field 1, then field 2, which is black when the pictures end
+ * after a field 1.
  */
 static int write_ready_frames(AVFormatContext *s, int flush)
 {
     SdiMuxContext *sdi = s->priv_data;
+    DtSdiView *view = ff_sdi_packer_view(sdi->packer);
+    size_t raw_size = sdi->frame_size - sdi->frame_padding;
     int ret;
 
     while ((ret = ff_sdi_packer_ready(sdi->packer, flush)) > 0) {
-        if (DtSdiView_SetRawFrame(ff_sdi_packer_view(sdi->packer), sdi->frame_buf,
-                                  sdi->frame_size, sdi->vidstd, 10) != DTAPI_OK)
+        // The view starts with field 1 of a frame of level B
+        if (!sdi->field2_due) {
+            if (DtSdiView_SetRawFrame(view, sdi->frame_buf, raw_size, sdi->vidstd, 10) !=
+                DTAPI_OK)
+                return AVERROR(EINVAL);
+        } else if (DtSdiView_SetLevelBField(view, 2) != DTAPI_OK) {
             return AVERROR(EINVAL);
+        }
         ret = ff_sdi_packer_build(sdi->packer);
         if (ret < 0)
             return ret;
+        if (sdi->level_b && !sdi->field2_due) {
+            sdi->field2_due = 1;
+            continue;
+        }
+        sdi->field2_due = 0;
         avio_write(s->pb, sdi->frame_buf, sdi->frame_size);
         sdi->num_frames++;
     }
-    return ret;
+    if (ret < 0 || !flush || !sdi->field2_due)
+        return ret;
+
+    sdi->field2_due = 0;
+    if (DtSdiView_SetLevelBField(view, 2) != DTAPI_OK)
+        return AVERROR(EINVAL);
+    ret = ff_sdi_packer_build_black(sdi->packer);
+    if (ret < 0)
+        return ret;
+    avio_write(s->pb, sdi->frame_buf, sdi->frame_size);
+    sdi->num_frames++;
+    return 0;
 }
 
 /*

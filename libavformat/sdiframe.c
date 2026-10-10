@@ -72,6 +72,27 @@ static int worker_pool(void *log_ctx, int threads, DtWorkerPool **pool, int *num
     return 0;
 }
 
+/* The places of the audio cadence of the standard vidstd, as builder puts the samples
+ * in, and in offset, when not NULL, the samples of a cycle before each place. A rate
+ * without a cadence, or with one of a single place, gives 0. */
+static int audio_cadence(DtSdiBuilder *builder, int vidstd, int offset[MAX_CADENCE + 1])
+{
+    int length = 0;
+
+    for (int place = 1, sum = 0; place <= MAX_CADENCE; place++) {
+        int nb_samples = 0;
+
+        if (DtSdiBuilder_GetNumAudioSamples(builder, vidstd, place, &nb_samples) !=
+            DTAPI_OK)
+            break;
+        if (offset)
+            offset[place] = sum;
+        length = place;
+        sum += nb_samples;
+    }
+    return length >= 2 ? length : 0;
+}
+
 /* The number of the first sample of frame number frame at frame_rate. At a 1001 rate it
  * is the sum of the samples of the cadence before. */
 static int64_t frame_first_sample(AVRational frame_rate, int64_t frame)
@@ -192,16 +213,7 @@ int ff_sdi_unpacker_alloc(SdiUnpacker **unpacker, void *log_ctx,
     builder = DtSdiBuilder_Alloc();
     if (!builder)
         return AVERROR(ENOMEM);
-    for (int place = 1, sum = 0; place <= MAX_CADENCE; place++) {
-        int nb_samples = 0;
-
-        if (DtSdiBuilder_GetNumAudioSamples(builder, u->vidstd, place, &nb_samples) !=
-            DTAPI_OK)
-            break;
-        u->cadence_offset[place] = sum;
-        u->cadence_length = place;
-        sum += nb_samples;
-    }
+    u->cadence_length = audio_cadence(builder, u->vidstd, u->cadence_offset);
     DtSdiBuilder_Freep(&builder);
 
     // Room for the most samples a frame of the standard carries, on every channel
@@ -500,6 +512,9 @@ struct SdiPacker {
 
     SdiPair *pair;              ///< pairs the images and the audio into frames
     AVPacket *image_pkt;        ///< the image of the frame being built
+
+    int cadence_length;         ///< the places of the standard's audio cadence, or 0
+    int place;                  ///< the next frame's place in it, 0 for the builder's own
 };
 
 /* The builder's format of an FFmpeg pixel format it takes as it is, or
@@ -696,6 +711,19 @@ size_t ff_sdi_packer_frame_size(const SdiPacker *packer)
     return packer->frame_size;
 }
 
+void ff_sdi_packer_count_places(SdiPacker *packer)
+{
+    packer->cadence_length = audio_cadence(packer->builder, packer->vidstd, NULL);
+    packer->place = packer->cadence_length > 0;
+}
+
+/* The next frame takes the next place of the cadence, when the packer counts them. */
+static void next_place(SdiPacker *p)
+{
+    if (p->place)
+        p->place = p->place % p->cadence_length + 1;
+}
+
 int ff_sdi_packer_add(SdiPacker *packer, const AVPacket *pkt)
 {
     AVStream *video = packer->video_stream;
@@ -715,7 +743,8 @@ static int next_nb_samples(SdiPacker *p, int *nb_samples)
     *nb_samples = 0;
     if (!p->audio_stream)
         return 0;
-    if (DtSdiBuilder_GetNumAudioSamples(p->builder, p->vidstd, 0, nb_samples) != DTAPI_OK)
+    if (DtSdiBuilder_GetNumAudioSamples(p->builder, p->vidstd, p->place, nb_samples) !=
+        DTAPI_OK)
         return AVERROR(EINVAL);
     return 0;
 }
@@ -813,8 +842,10 @@ int ff_sdi_packer_build(SdiPacker *packer)
         }
     }
     if (ret >= 0) {
-        if (p->audio_stream)
+        if (p->audio_stream) {
             convert_audio(p, &audio, nb_samples);
+            audio.FrameNumber = p->place;
+        }
         result = DtSdiBuilder_Build(p->builder, p->view, &image,
                                     p->audio_stream ? &audio : NULL, NULL);
         if (result != DTAPI_OK) {
@@ -824,10 +855,25 @@ int ff_sdi_packer_build(SdiPacker *packer)
         }
     }
     av_packet_unref(p->image_pkt);
+    next_place(p);
     if (ret >= 0)
         return 0;
 
     // The room is filled all the same, black and silent
     DtSdiBuilder_Build(p->builder, p->view, NULL, NULL, NULL);
     return ret;
+}
+
+int ff_sdi_packer_build_black(SdiPacker *packer)
+{
+    DtapiResult result = DtSdiBuilder_Build(packer->builder, packer->view, NULL, NULL,
+                                            NULL);
+
+    next_place(packer);
+    if (result != DTAPI_OK) {
+        av_log(packer->log_ctx, AV_LOG_ERROR, "Could not build a black frame: %s\n",
+               DtapiResult2Str(result));
+        return AVERROR(EINVAL);
+    }
+    return 0;
 }

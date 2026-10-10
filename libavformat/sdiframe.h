@@ -157,9 +157,18 @@ void ff_sdi_packer_free(SdiPacker **packer);
 DtSdiView *ff_sdi_packer_view(SdiPacker *packer);
 
 /**
- * The size of a frame of the standard, without padding.
+ * The size of a frame of the standard, without padding. In 3G level B it is a frame of
+ * the interface, with two pictures, which the packer builds one at a time.
  */
 size_t ff_sdi_packer_frame_size(const SdiPacker *packer);
+
+/**
+ * Give each frame its place in the audio cadence of a 1001 rate or of 3G level B from
+ * place 1 on, the places of field 1 and field 2 in turn in level B, rather than the
+ * builder's own cadence, which starts with field 2 as an output channel sends it. For a
+ * file, whose frames start at place 1 and with field 1. Call it before the first frame.
+ */
+void ff_sdi_packer_count_places(SdiPacker *packer);
 
 /**
  * Hand the packer a packet of the video or the audio stream; one of another stream is
@@ -184,5 +193,13 @@ int ff_sdi_packer_ready(SdiPacker *packer, int flush);
  * @return 0, or a negative error code
  */
 int ff_sdi_packer_build(SdiPacker *packer);
+
+/**
+ * Build a black and silent frame into the room the view describes, such as field 2 of a
+ * last frame of 3G level B whose picture never came. It takes its place in the cadence.
+ *
+ * @return 0, or a negative error code
+ */
+int ff_sdi_packer_build_black(SdiPacker *packer);
 
 #endif /* AVFORMAT_SDIFRAME_H */
