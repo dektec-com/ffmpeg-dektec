@@ -1136,7 +1136,17 @@ It reads the uncompressed SDI frames that the @code{sdi} muxer writes; the
 It gives a video stream in @code{yuv422p10}, coded with @code{wrapped_avframe},
 and an audio stream in @code{pcm_s24le} as soon as a frame carries embedded
 audio. The video counts in frames of the standard's rate and the audio in
-samples at 48 kHz, so that a copy keeps every timestamp exact.
+samples at 48 kHz, so that a copy keeps every timestamp exact. At 29.97 and
+59.94 frames per second a frame's audio is stamped from its place in the
+audio cadence, which the frame carries, so that the timestamps follow the
+samples the frames hold.
+
+A file of 3G level B holds two pictures in each frame, field 1 and field 2 of
+a 3G interface of half the picture rate. The demuxer gives them one after the
+other, each with its own image and the audio it carries, and the video counts
+in pictures, at 50 to 60 per second. The header says whether a file is level
+B; a file of level B dual stream, two separate streams on one link, is not
+supported.
 
 CDTAPI's SDI parser takes the frames apart, so the demuxer needs FFmpeg
 configured with @code{--enable-libcdtapi}. The audio stream has as many
@@ -1158,8 +1168,8 @@ read from the header.
 @item sdi_standard
 Set the SDI standard of a file without a header, in the form of the
 @code{sdi} muxer's @option{sdi_standard} followed by the frame rate, e.g.
-@samp{HD1080i29_97} or @samp{3G1080p59_94}. Without the rate it is the lowest
-rate of the standard.
+@samp{HD1080i29_97}, @samp{3G1080p59_94} or, for 3G level B,
+@samp{3GB1080p50}. Without the rate it is the lowest rate of the standard.
 
 @item v210 @var{bool}
 Give the video as @code{v210} packets rather than @code{wrapped_avframe} frames

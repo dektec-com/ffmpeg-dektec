@@ -479,6 +479,11 @@ a video stream in @code{yuv422p10}, coded with @code{wrapped_avframe}, or in
 audio stream in @code{pcm_s24le} in as many channels as the frames carry, up to
 16; the video counts in frames and the audio in samples at 48 kHz.
 
+On a port that receives 3G level B, the card holds each of the two pictures of
+an interface frame as a frame of its own, and the input gives each picture as
+an image, at 50 to 60 pictures a second, with the audio it carries. The input
+takes level B when the card detects it.
+
 @itemize
 @item
 The input reads up to five frames when it opens, to find whether they carry
@@ -567,8 +572,10 @@ Specify the audio bit depth per sample. Allowed values are 16 and 24.
 Specify the number of audio channels. Allowed range is from 1 to 64.
 
 @item sdi_standard
-Force a specific SDI standard. Otherwise the standard will automatically be
-deduced from the video input parameters.
+Set the SDI standard the input expects, in the form of the @code{sdi}
+demuxer's @option{sdi_standard}, e.g. @samp{HD1080i29_97} or, for 3G level B,
+@samp{3GB1080p50}; frames of another standard are left out. Otherwise the input
+takes the standard the card detects.
 
 @item v210 @var{bool}
 On an SDI port, give the video as @code{v210} packets rather than

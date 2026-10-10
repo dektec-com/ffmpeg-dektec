@@ -297,10 +297,19 @@ stream in @code{pcm_s24le}, @code{pcm_s24be} or @code{pcm_s32le} at 48 kHz, of
 up to 16 channels, each image with the audio of its time. An SDI file can be
 sent as it is, with @code{-c copy}.
 
+In 3G level B, chosen with @samp{3GB} in @option{sdi_standard}, the output
+builds each image of the video stream as one picture in room the card lends,
+and the card puts the pictures into field 1 and field 2 of the interface's
+frames in turn.
+
 The output fills three quarters of the card's buffer before it starts sending.
 A frame that comes too late leaves the card without data, as the output fills
-nothing in, and the receiver loses the signal. The output logs each time the
-card ran out of frames, and gives the total when it closes.
+nothing in, and the receiver loses the signal. The card would then go on when
+frames come again, on a frame grid of its own, and in 3G level B with a picture
+possibly in the other field. So the output starts again as it started: it
+drops the frames in the card's buffer, logs the frame the card ran out before,
+and fills three quarters of the buffer again before it sends. It gives the
+number of times when it closes.
 
 @subsection Options
 
@@ -331,9 +340,10 @@ Automatic pixel format conversion is done to get the right pixel format for the
 hardware.
 
 @item sdi_standard
-Force a specific SDI standard, e.g. @samp{SD576i}, @samp{HD1080i},
-@samp{3G1080p} or @samp{12G2160p}. Otherwise the standard will automatically be
-deduced from the video stream.
+Force a specific SDI standard, in the form of the @code{sdi} muxer's
+@option{sdi_standard}, e.g. @samp{SD576i}, @samp{HD1080i}, @samp{3G1080p},
+@samp{3GB1080p} for 3G level B, or @samp{12G2160p}. Otherwise the standard
+will automatically be deduced from the video stream, and is never level B.
 
 @item threads
 Set how many threads the builder puts an SDI frame together over. Building a
