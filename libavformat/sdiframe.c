@@ -133,6 +133,8 @@ struct SdiUnpacker {
     int stream_channels;        ///< its channels
     int audio_waiting;          ///< whether the audio of the frame parsed last is to go out
     int64_t audio_pts;          ///< the number of that frame's first sample
+    int64_t audio_shift;        ///< added to every audio timestamp; see prepare_audio()
+    int audio_started;          ///< whether audio_shift is set, by the first audio
     int warned_channels;        ///< whether a change in the number of channels was logged
 };
 
@@ -326,6 +328,15 @@ static void prepare_audio(SdiUnpacker *u)
     } else {
         u->audio_pts = frame_first_sample(u->frame_rate, u->frame_number);
     }
+
+    // A stream that starts within a cycle, as an input's may, can number its first
+    // sample just below 0. The audio then moves on by those few samples, all of it, so
+    // that its timestamps start at 0.
+    if (u->audio_waiting && !u->audio_started) {
+        u->audio_shift = FFMAX(-u->audio_pts, 0);
+        u->audio_started = 1;
+    }
+    u->audio_pts += u->audio_shift;
 }
 
 int ff_sdi_unpacker_add_audio_stream(SdiUnpacker *unpacker, AVFormatContext *s,
