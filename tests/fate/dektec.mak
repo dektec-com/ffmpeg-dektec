@@ -128,6 +128,29 @@ fate-dektec-sdi-in-1080p50b: CMD = dektec_sdi_loop 1080P50B 3GB1080p50 10 $(call
 FATE_DEKTEC_LOOP += fate-dektec-sdi-in-1080p59_94b
 fate-dektec-sdi-in-1080p59_94b: CMD = dektec_sdi_loop 1080P59_94B 3GB1080p59_94 10 $(call DEKTEC_SRC,1920x1080,60000/1001,$(DEKTEC_VF_P))
 
+# The sink of a level-B output read with the sdi demuxer, and a file of the sdi muxer
+# received on an input: the frames of the interface are the same on both sides.
+FATE_DEKTEC_DEMUX += fate-dektec-sdi-out-demux-1080p50b
+fate-dektec-sdi-out-demux-1080p50b: CMD = dektec_sdi_out_demux 3 3GB1080p50 $(call DEKTEC_SRC,1920x1080,50,$(DEKTEC_VF_P))
+
+FATE_DEKTEC_IN += fate-dektec-sdi-in-file-1080p50b
+fate-dektec-sdi-in-file-1080p50b: CMD = dektec_sdi_in_std 1080P50B 3GB1080p50 10 - $(call DEKTEC_SRC,1920x1080,50,$(DEKTEC_VF_P))
+
+FATE_DEKTEC_IN += fate-dektec-sdi-in-file-1080p59_94b
+fate-dektec-sdi-in-file-1080p59_94b: CMD = dektec_sdi_in_std 1080P59_94B 3GB1080p59_94 10 - $(call DEKTEC_SRC,1920x1080,60000/1001,$(DEKTEC_VF_P))
+
+# The same with a picture lost after the fourth: the pictures after it come one place
+# on, their timestamps and their audio's with them.
+FATE_DEKTEC_IN += fate-dektec-sdi-in-lost-1080p50b
+fate-dektec-sdi-in-lost-1080p50b: CMD = dektec_sdi_in_std 1080P50B 3GB1080p50 10 4 $(call DEKTEC_SRC,1920x1080,50,$(DEKTEC_VF_P))
+
+# An output that runs out of frames after ten starts again and sends the rest
+# (0038, decision 3).
+FATE_DEKTEC_OUT += fate-dektec-sdi-out-underflow-720p50
+fate-dektec-sdi-out-underflow-720p50: CMD = dektec_sdi_out_starve 3 10 $(call DEKTEC_SRC_T,1280x720,50,$(DEKTEC_VF_P),1)
+fate-dektec-sdi-out-underflow-720p50: CMP = oneline
+fate-dektec-sdi-out-underflow-720p50: REF = started again after an underflow
+
 DEKTEC_SRC_DEPS = LAVFI_INDEV TESTSRC_FILTER SMPTEHDBARS_FILTER SINE_FILTER \
                   SETFIELD_FILTER SCALE_FILTER FORMAT_FILTER ARESAMPLE_FILTER AFORMAT_FILTER \
                   WRAPPED_AVFRAME_ENCODER PCM_S24LE_ENCODER
@@ -135,6 +158,7 @@ DEKTEC_SRC_DEPS = LAVFI_INDEV TESTSRC_FILTER SMPTEHDBARS_FILTER SINE_FILTER \
 FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_OUT)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV SDI_MUXER FRAMEMD5_MUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_IN)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV SDI_MUXER SDI_DEMUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_COPY)
+FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV SDI_DEMUXER FRAMEMD5_MUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_DEMUX)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV DEKTEC_OUTDEV FRAMEMD5_MUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_LOOP)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV DEKTEC_OUTDEV SDI_MUXER FRAMEMD5_MUXER V210_ENCODER V210_DECODER \
                            $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_V210)

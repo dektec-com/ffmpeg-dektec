@@ -388,6 +388,63 @@ dektec_sdi_in(){
         framemd5 -f dektec -i 9217800001:1 -frames:v $frames -map 0 -c:v rawvideo -c:a pcm_s24le
 }
 
+# dektec_sdi_in_std VIDSTD STANDARD FRAMES SKIP ARGS... makes a file of the sdi standard
+# STANDARD from ARGS with the sdi muxer, plays it on port 1 as the video standard VIDSTD
+# and gives the framemd5 of the first FRAMES video frames port 1 receives, and the audio
+# with them. The source waits for the reads, so that a slow build misses no frame. SKIP
+# is "-", or a number of frames after which the port loses one, of 3G level B a
+# picture.
+dektec_sdi_in_std(){
+    vidstd=$1
+    standard=$2
+    frames=$3
+    skip=$4
+    shift 4
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    skipvalue=
+    [ "$skip" != "-" ] && skipvalue=1:$skip
+    ffmpeg -y "$@" -bitexact -sdi_standard $standard -f sdi -no_header 1 \
+        $(target_path $srcfile) || return
+    CDTAPI_SIM=1 CDTAPI_SIM_REALTIME=0 CDTAPI_SIM_SDI_SKIP=$skipvalue \
+        CDTAPI_SIM_SDI_SOURCE=1:$vidstd:$(dektec_env_path $srcfile) \
+        framemd5 -f dektec -i 9217800001:1 -frames:v $frames -map 0 -c:v rawvideo -c:a pcm_s24le
+}
+
+# dektec_sdi_out_demux PORT STANDARD ARGS... sends ARGS' output in the sdi standard
+# STANDARD through port PORT, and gives the framemd5 of what the port sent, read with
+# the sdi demuxer.
+dektec_sdi_out_demux(){
+    port=$1
+    standard=$2
+    shift 2
+    sinkfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $sinkfile"
+    rm -f $sinkfile
+    CDTAPI_SIM=1 CDTAPI_SIM_SDI_SINK=$port:$(dektec_env_path $sinkfile) \
+        ffmpeg "$@" -sdi_standard $standard -f dektec 9217800001:$port || return
+    framemd5 -no_header 1 -sdi_standard $standard -f sdi -i $(target_path $sinkfile) \
+        -map 0 -c:v rawvideo -c:a pcm_s24le
+}
+
+# dektec_sdi_out_starve PORT FRAMES ARGS... sends ARGS' output through port PORT, which
+# runs out of frames once it has sent FRAMES, and says whether the output started again
+# after the underflow and sent the rest.
+dektec_sdi_out_starve(){
+    port=$1
+    frames=$2
+    shift 2
+    logfile="${outdir}/${test}.log"
+    cleanfiles="$cleanfiles $logfile"
+    CDTAPI_SIM=1 CDTAPI_SIM_SDI_STARVE=$port:$frames:1 \
+        ffmpeg "$@" -f dektec 9217800001:$port 2> $logfile || return
+    if grep -q "ran out of frames to send" $logfile; then
+        echo "started again after an underflow"
+    else
+        echo "no underflow"
+    fi
+}
+
 pcm(){
     ffmpeg -auto_conversion_filters "$@" -vn -f s16le -
 }
