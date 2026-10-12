@@ -100,12 +100,16 @@ int ff_sdi_unpacker_add_audio_stream(SdiUnpacker *unpacker, AVFormatContext *s,
  * elsewhere once this returns.
  *
  * In 3G level B the view describes one picture, field 1 or field 2 of a frame of the
- * interface, and frame_number counts pictures: even for field 1 and odd for field 2.
+ * interface, and frame_number counts pictures. The picture's timestamp is its place:
+ * even for field 1 and odd for field 2, as DtSdiView_GetLevelBField() gives the field.
+ * A picture whose field does not fit, the first after a start in field 2 or one after
+ * a picture that was lost, moves the places on by one, and a loss is logged.
  *
  * The audio's timestamp is the number of its first sample: from the frame's place in
  * the audio cadence of a 1001 rate, which the frame carries, so that the timestamps
  * follow the samples from whichever place the frames start; or else from frame_number,
- * in 3G level B with field 1 starting a frame of the interface and field 2 ending it.
+ * in 3G level B from the picture's place, field 1 starting a frame of the interface and
+ * field 2 ending it.
  *
  * @return 0, or a negative error code
  */

@@ -125,6 +125,9 @@ struct SdiUnpacker {
     int samples[FF_SDI_AUDIO_MAX_CHANNELS];  ///< and the samples it carried on it
     int64_t frame_number;       ///< that frame's number
     int cadence_place;          ///< and its place in the audio cadence, 0 for none
+    int64_t place_shift;        ///< of 3G level B, added to frame_number for each picture's
+                                ///< place; see level_b_place()
+    int placed;                 ///< whether a picture of level B has been placed
 
     int cadence_length;         ///< the places of the standard's cadence, 0 for none
     int cadence_offset[MAX_CADENCE + 1]; ///< the samples of a cycle before each place
@@ -364,6 +367,28 @@ int ff_sdi_unpacker_add_audio_stream(SdiUnpacker *unpacker, AVFormatContext *s,
     return 0;
 }
 
+/* The place of the picture of 3G level B that the view describes, frame_number counting
+ * the pictures in from 0: even for field 1 and odd for field 2, as the picture's field
+ * says, which the channel set from the line of its payload ID. A picture whose field
+ * does not fit its count, the first after a start in field 2 or one after a picture
+ * that was lost, moves the places of it and those after it on by one. */
+static int64_t level_b_place(SdiUnpacker *u, int64_t frame_number)
+{
+    int64_t place = frame_number + u->place_shift;
+    int field = 0;
+
+    if (DtSdiView_GetLevelBField(u->view, &field) == DTAPI_OK &&
+        (place % 2 == 0) != (field == 1)) {
+        if (u->placed)
+            av_log(u->log_ctx, AV_LOG_WARNING, "A picture of 3G level B was lost before "
+                   "picture %"PRId64"\n", place);
+        u->place_shift++;
+        place++;
+    }
+    u->placed = 1;
+    return place;
+}
+
 int ff_sdi_unpacker_parse(SdiUnpacker *unpacker, int64_t frame_number, AVPacket *pkt)
 {
     SdiUnpacker *u = unpacker;
@@ -373,6 +398,8 @@ int ff_sdi_unpacker_parse(SdiUnpacker *unpacker, int64_t frame_number, AVPacket 
     DtapiResult result;
     AVFrame *frame;
 
+    if (u->level_b)
+        frame_number = level_b_place(u, frame_number);
     image.Fields = DT_SDI_FIELDS_WOVEN;
     for (int pair = 0; pair < FF_SDI_AUDIO_MAX_CHANNELS / 2; pair++)
         audio.Formats[pair] = DT_SDI_AUDIO_PCM;

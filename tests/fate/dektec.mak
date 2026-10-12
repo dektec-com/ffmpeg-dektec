@@ -1,7 +1,8 @@
 # DekTec's input and output device on CDTAPI's emulated DTA-2178, which receives SDI
 # from a file and sends it to one, so that no card is needed. The output tests take
-# the md5 of what the port sent; the input tests make a file of frames with the sdi
-# muxer and take the framemd5 of what the port receives.
+# the md5 of what the port sent, which ends in the black frame the channel sends after
+# the last, with the payload ID of its standard; the input tests make a file of frames
+# with the sdi muxer and take the framemd5 of what the port receives.
 
 DEKTEC_VF_P = scale,format=yuv422p10le
 DEKTEC_VF_I = setfield=tff,scale,format=yuv422p10le
@@ -28,29 +29,29 @@ DEKTEC_SRC_STILL_4K = -f lavfi -i smptehdbars=s=$(1):r=$(2) -f lavfi -i sine=r=4
 FATE_DEKTEC_OUT += fate-dektec-sdi-out-576i50
 fate-dektec-sdi-out-576i50: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,720x576,25,$(DEKTEC_VF_I))
 fate-dektec-sdi-out-576i50: CMP = oneline
-fate-dektec-sdi-out-576i50: REF = 2caaf938fb1df0e5849a28f2e99c5866
+fate-dektec-sdi-out-576i50: REF = 34fb4744b9328eb46149c732e9b2a908
 
 FATE_DEKTEC_OUT += fate-dektec-sdi-out-720p50
 fate-dektec-sdi-out-720p50: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,1280x720,50,$(DEKTEC_VF_P))
 fate-dektec-sdi-out-720p50: CMP = oneline
-fate-dektec-sdi-out-720p50: REF = decf6e03352b729e1bacfe98532c64db
+fate-dektec-sdi-out-720p50: REF = 05cd7507550a9919335a39b7f26522ef
 
 FATE_DEKTEC_OUT += fate-dektec-sdi-out-1080i50
 fate-dektec-sdi-out-1080i50: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,1920x1080,25,$(DEKTEC_VF_I))
 fate-dektec-sdi-out-1080i50: CMP = oneline
-fate-dektec-sdi-out-1080i50: REF = 54bae403d870e2b1957a3703cc966632
+fate-dektec-sdi-out-1080i50: REF = 1ce2f050c24f87e844dd8ef27663dc7d
 
 # 2160p over one link, on ports 1 and 5, which are the 12G ports of the emulated card:
 # 2160p30 is carried on one 6G link and 2160p50 on one 12G link (0014).
 FATE_DEKTEC_OUT += fate-dektec-sdi-out-2160p30
 fate-dektec-sdi-out-2160p30: CMD = dektec_sdi_out 5 $(call DEKTEC_SRC_4K,3840x2160,30,$(DEKTEC_VF_P))
 fate-dektec-sdi-out-2160p30: CMP = oneline
-fate-dektec-sdi-out-2160p30: REF = 08385a7ebbcac79b018c18ace4272fe5
+fate-dektec-sdi-out-2160p30: REF = cbd2c042772c59bdb77e877bea0e4e57
 
 FATE_DEKTEC_OUT += fate-dektec-sdi-out-2160p50
 fate-dektec-sdi-out-2160p50: CMD = dektec_sdi_out 5 $(call DEKTEC_SRC_4K,3840x2160,50,$(DEKTEC_VF_P))
 fate-dektec-sdi-out-2160p50: CMP = oneline
-fate-dektec-sdi-out-2160p50: REF = 836aaebb08a65751a026187dbadd14ab
+fate-dektec-sdi-out-2160p50: REF = faeb32abdc33ec65d5c2348fba2f095e
 
 # 1080i59.94, a rate whose frame does not last a whole number of microseconds, and whose
 # audio follows a cadence of five frames: sent from a source, and copied from an .sdi
@@ -58,18 +59,18 @@ fate-dektec-sdi-out-2160p50: REF = 836aaebb08a65751a026187dbadd14ab
 FATE_DEKTEC_OUT += fate-dektec-sdi-out-1080i59_94
 fate-dektec-sdi-out-1080i59_94: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,1920x1080,30000/1001,$(DEKTEC_VF_I))
 fate-dektec-sdi-out-1080i59_94: CMP = oneline
-fate-dektec-sdi-out-1080i59_94: REF = ea4598e433da20197ce88a49a904188e
+fate-dektec-sdi-out-1080i59_94: REF = 3707c9467541ca8ce5407e8ccae2b180
 
 FATE_DEKTEC_COPY += fate-dektec-sdi-copy-out-1080i59_94
 fate-dektec-sdi-copy-out-1080i59_94: CMD = dektec_sdi_copy_out 3 $(call DEKTEC_SRC,1920x1080,30000/1001,$(DEKTEC_VF_I))
 fate-dektec-sdi-copy-out-1080i59_94: CMP = oneline
-fate-dektec-sdi-copy-out-1080i59_94: REF = ea4598e433da20197ce88a49a904188e
+fate-dektec-sdi-copy-out-1080i59_94: REF = 3707c9467541ca8ce5407e8ccae2b180
 
 # 2160p50 copied from an .sdi file over 12G, which must send what the source sent.
 FATE_DEKTEC_COPY += fate-dektec-sdi-copy-out-2160p50
 fate-dektec-sdi-copy-out-2160p50: CMD = dektec_sdi_copy_out 5 $(call DEKTEC_SRC_4K,3840x2160,50,$(DEKTEC_VF_P))
 fate-dektec-sdi-copy-out-2160p50: CMP = oneline
-fate-dektec-sdi-copy-out-2160p50: REF = 836aaebb08a65751a026187dbadd14ab
+fate-dektec-sdi-copy-out-2160p50: REF = faeb32abdc33ec65d5c2348fba2f095e
 
 FATE_DEKTEC_IN += fate-dektec-sdi-in-576i50
 fate-dektec-sdi-in-576i50: CMD = dektec_sdi_in 625I50 10 $(call DEKTEC_SRC,720x576,25,$(DEKTEC_VF_I))
@@ -84,7 +85,7 @@ fate-dektec-sdi-in-1080i50: CMD = dektec_sdi_in 1080I50 10 $(call DEKTEC_SRC,192
 FATE_DEKTEC_V210 += fate-dektec-sdi-out-v210-1080i59_94
 fate-dektec-sdi-out-v210-1080i59_94: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,1920x1080,30000/1001,$(DEKTEC_VF_I)) -c:v v210
 fate-dektec-sdi-out-v210-1080i59_94: CMP = oneline
-fate-dektec-sdi-out-v210-1080i59_94: REF = ea4598e433da20197ce88a49a904188e
+fate-dektec-sdi-out-v210-1080i59_94: REF = 3707c9467541ca8ce5407e8ccae2b180
 
 FATE_DEKTEC_IN += fate-dektec-sdi-in-1080i59_94
 fate-dektec-sdi-in-1080i59_94: CMD = dektec_sdi_in 1080I59_94 10 $(call DEKTEC_SRC,1920x1080,30000/1001,$(DEKTEC_VF_I))
@@ -102,23 +103,24 @@ fate-dektec-sdi-in-2160p50: CMD = dektec_sdi_in 2160P50 5 $(call DEKTEC_SRC_STIL
 
 # 3G level B, sent as the card holds it, a picture of level A at a time with the field
 # the channel sets: from a source and copied from an .sdi file, which must send the
-# same. The emulated card's sink and source hold those pictures, not the frames of the
-# interface an .sdi file holds, so the input receives what the output sent, at the pace
-# of its reads.
+# same. The emulated card's sink and source hold frames of the interface, as an .sdi
+# file does: the sink starts with the card's first picture, of field 2, and a black
+# field 1. The input receives what the output sent, at the pace of its reads, and
+# places each picture by its field.
 FATE_DEKTEC_OUT += fate-dektec-sdi-out-1080p50b
 fate-dektec-sdi-out-1080p50b: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,1920x1080,50,$(DEKTEC_VF_P)) -sdi_standard 3GB1080p50
 fate-dektec-sdi-out-1080p50b: CMP = oneline
-fate-dektec-sdi-out-1080p50b: REF = 827cd0f837d4a4883847a0bb18ce10ee
+fate-dektec-sdi-out-1080p50b: REF = f28832661afcbd9769565452e5d6e316
 
 FATE_DEKTEC_OUT += fate-dektec-sdi-out-1080p59_94b
 fate-dektec-sdi-out-1080p59_94b: CMD = dektec_sdi_out 3 $(call DEKTEC_SRC,1920x1080,60000/1001,$(DEKTEC_VF_P)) -sdi_standard 3GB1080p59_94
 fate-dektec-sdi-out-1080p59_94b: CMP = oneline
-fate-dektec-sdi-out-1080p59_94b: REF = 1b67f8ac61ec4de7567e52df49f4a1ef
+fate-dektec-sdi-out-1080p59_94b: REF = 1a2ff7d3c6fd4958ec33fc47220a8ab2
 
 FATE_DEKTEC_COPY += fate-dektec-sdi-copy-out-1080p59_94b
 fate-dektec-sdi-copy-out-1080p59_94b: CMD = dektec_sdi_copy_out_std 3 3GB1080p59_94 $(call DEKTEC_SRC,1920x1080,60000/1001,$(DEKTEC_VF_P))
 fate-dektec-sdi-copy-out-1080p59_94b: CMP = oneline
-fate-dektec-sdi-copy-out-1080p59_94b: REF = 1b67f8ac61ec4de7567e52df49f4a1ef
+fate-dektec-sdi-copy-out-1080p59_94b: REF = 1a2ff7d3c6fd4958ec33fc47220a8ab2
 
 FATE_DEKTEC_LOOP += fate-dektec-sdi-in-1080p50b
 fate-dektec-sdi-in-1080p50b: CMD = dektec_sdi_loop 1080P50B 3GB1080p50 10 $(call DEKTEC_SRC,1920x1080,50,$(DEKTEC_VF_P))
