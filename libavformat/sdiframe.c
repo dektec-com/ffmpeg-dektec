@@ -435,6 +435,8 @@ int ff_sdi_unpacker_parse(SdiUnpacker *unpacker, int64_t frame_number, AVPacket 
     frame->format = AV_PIX_FMT_YUV422P10LE;
     frame->width = info->picture_width;
     frame->height = info->picture_height;
+    if (info->scanning_method == SDI_I_PICT_I_TR || info->scanning_method == SDI_I_PICT_P_TR)
+        frame->flags |= AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST;
     frame->buf[0] = av_buffer_pool_get(u->image_pool);
     if (!frame->buf[0]) {
         av_frame_free(&frame);
