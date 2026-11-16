@@ -51,97 +51,97 @@ fate-sdi-mux-720p60: REF = 3d728ad0f408d32a0bc2857f0c0d1a49
 FATE_SDI-yes += fate-sdi-mux-1080p23_98
 fate-sdi-mux-1080p23_98: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -r "24000/1001" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard HD1080p md5:
 fate-sdi-mux-1080p23_98: CMP = oneline
-fate-sdi-mux-1080p23_98: REF = 8cdd34e52298f94f0856c2d08d9f9a90
+fate-sdi-mux-1080p23_98: REF = 7352febeb06334c824989f0fc940abd9
 
 FATE_SDI-yes += fate-sdi-mux-1080p24
 fate-sdi-mux-1080p24: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -r "24" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard HD1080p md5:
 fate-sdi-mux-1080p24: CMP = oneline
-fate-sdi-mux-1080p24: REF = a6afc27ee763b2b0e14cc90db9243672
+fate-sdi-mux-1080p24: REF = 3b4e1829b31f4c6a5ef482107b4361f1
 
 FATE_SDI-yes += fate-sdi-mux-1080p25
 fate-sdi-mux-1080p25: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -r "25" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard HD1080p md5:
 fate-sdi-mux-1080p25: CMP = oneline
-fate-sdi-mux-1080p25: REF = ed1cc1a59922d0875be4940ea4eaee1b
+fate-sdi-mux-1080p25: REF = 193edec29e1eb36344afaebda27f603b
 
 FATE_SDI-yes += fate-sdi-mux-1080p29_97
 fate-sdi-mux-1080p29_97: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -r "30000/1001" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard HD1080p md5:
 fate-sdi-mux-1080p29_97: CMP = oneline
-fate-sdi-mux-1080p29_97: REF = b32969f783457621d6f5cb53bb9ae557
+fate-sdi-mux-1080p29_97: REF = be698a0151624e27f4838dea583d3636
 
 FATE_SDI-yes += fate-sdi-mux-1080p30
 fate-sdi-mux-1080p30: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -r "30" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard HD1080p md5:
 fate-sdi-mux-1080p30: CMP = oneline
-fate-sdi-mux-1080p30: REF = 98a8d4bfb9a068866fb8db88010ccd8f
+fate-sdi-mux-1080p30: REF = 809f9272b76c61b5587e03f271071c97
 
 FATE_SDI-yes += fate-sdi-mux-1080i50
 fate-sdi-mux-1080i50: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -vf "setfield=tff" -r "25" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard HD1080i md5:
 fate-sdi-mux-1080i50: CMP = oneline
-fate-sdi-mux-1080i50: REF = b9de70287078d0d4a390889c7ea5cfbf
+fate-sdi-mux-1080i50: REF = 80a5d82f186fb0581d9d9f0e9ae04270
 
 FATE_SDI-yes += fate-sdi-mux-1080i59_94
 fate-sdi-mux-1080i59_94: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -vf "setfield=tff" -r "30000/1001" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard HD1080i md5:
 fate-sdi-mux-1080i59_94: CMP = oneline
-fate-sdi-mux-1080i59_94: REF = 676317b0e64b67fb4aabc9975910f919
+fate-sdi-mux-1080i59_94: REF = a6da35a02637e039a28553bf6744d418
 
 FATE_SDI-yes += fate-sdi-mux-1080i60
 fate-sdi-mux-1080i60: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -vf "setfield=tff" -r "30" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard HD1080i md5:
 fate-sdi-mux-1080i60: CMP = oneline
-fate-sdi-mux-1080i60: REF = cf87873da0f807ae9c2d9016bdc3be24
+fate-sdi-mux-1080i60: REF = b66fd8f3bffdb03d3162e1876d49d5b6
 
 FATE_SDI-yes += fate-sdi-mux-1080p50
 fate-sdi-mux-1080p50: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -r "50" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 3GA1080p md5:
 fate-sdi-mux-1080p50: CMP = oneline
-fate-sdi-mux-1080p50: REF = 1c7b20f81587a5c20b8fe588beff38e2
+fate-sdi-mux-1080p50: REF = 3ed5b6c8b8f58f2f19d81be31826b4f9
 
 FATE_SDI-yes += fate-sdi-mux-1080p59_94
 fate-sdi-mux-1080p59_94: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -r "60000/1001" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 3GA1080p md5:
 fate-sdi-mux-1080p59_94: CMP = oneline
-fate-sdi-mux-1080p59_94: REF = 92949d46c8be6d07d70bd4df9dbef9fd
+fate-sdi-mux-1080p59_94: REF = 27ce88e1c5cf1ba82f58a77693ccd49c
 
 FATE_SDI-yes += fate-sdi-mux-1080p60
 fate-sdi-mux-1080p60: CMD = ffmpeg -f lavfi -i testsrc -s 1920x1080 -r "60" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 3GA1080p md5:
 fate-sdi-mux-1080p60: CMP = oneline
-fate-sdi-mux-1080p60: REF = 615f39994ceb1cce5de463308a78bfb3
+fate-sdi-mux-1080p60: REF = b86d05c9618bcdb871dd29d247b32792
 
 FATE_SDI-yes += fate-sdi-mux-2160p23_98
 fate-sdi-mux-2160p23_98: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "24000/1001" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 6G2160p md5:
 fate-sdi-mux-2160p23_98: CMP = oneline
-fate-sdi-mux-2160p23_98: REF = 078dc95f1d9a18dcb253284d449ac7c7
+fate-sdi-mux-2160p23_98: REF = a849212a607ac7fc56469b4aa4d8c322
 
 FATE_SDI-yes += fate-sdi-mux-2160p24
 fate-sdi-mux-2160p24: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "24" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 6G2160p md5:
 fate-sdi-mux-2160p24: CMP = oneline
-fate-sdi-mux-2160p24: REF = 7ff3ed79d8ad595953dfb2998c1170b2
+fate-sdi-mux-2160p24: REF = 1e1810fc0819b68564e559aa8f473635
 
 FATE_SDI-yes += fate-sdi-mux-2160p25
 fate-sdi-mux-2160p25: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "25" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 6G2160p md5:
 fate-sdi-mux-2160p25: CMP = oneline
-fate-sdi-mux-2160p25: REF = 731a31c595b2e3fb4385d5223b1fb2d8
+fate-sdi-mux-2160p25: REF = 5fb8b7f8075645bc56fa698a2fe8d3cd
 
 FATE_SDI-yes += fate-sdi-mux-2160p29_97
 fate-sdi-mux-2160p29_97: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "30000/1001" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 6G2160p md5:
 fate-sdi-mux-2160p29_97: CMP = oneline
-fate-sdi-mux-2160p29_97: REF = a3f0b90f003c1033f526debca60a6cbc
+fate-sdi-mux-2160p29_97: REF = b45e41b153e1f8aa4248107ddf15838f
 
 FATE_SDI-yes += fate-sdi-mux-2160p30
 fate-sdi-mux-2160p30: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "30" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 6G2160p md5:
 fate-sdi-mux-2160p30: CMP = oneline
-fate-sdi-mux-2160p30: REF = 42cedcf91e94ce5a96ab83e95289b344
+fate-sdi-mux-2160p30: REF = 2877e0308335cae7f85f13b08d500421
 
 FATE_SDI-yes += fate-sdi-mux-2160p50
 fate-sdi-mux-2160p50: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "50" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 12G2160p md5:
 fate-sdi-mux-2160p50: CMP = oneline
-fate-sdi-mux-2160p50: REF = a18fc2abef7c409f0688ad4ce0d45a3f
+fate-sdi-mux-2160p50: REF = a0fbdb02cfc41af99daee99b79265f7e
 
 FATE_SDI-yes += fate-sdi-mux-2160p59_94
 fate-sdi-mux-2160p59_94: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "60000/1001" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 12G2160p md5:
 fate-sdi-mux-2160p59_94: CMP = oneline
-fate-sdi-mux-2160p59_94: REF = b492be8f878e2e0d711f6a7261ec88a9
+fate-sdi-mux-2160p59_94: REF = 86988de1437239d7fe552f6d6074baff
 
 FATE_SDI-yes += fate-sdi-mux-2160p60
 fate-sdi-mux-2160p60: CMD = ffmpeg -f lavfi -i testsrc -s 3840x2160 -r "60" -t 1 -pix_fmt yuv422p10le -flags +bitexact -fflags +bitexact -f sdi -sdi_standard 12G2160p md5:
 fate-sdi-mux-2160p60: CMP = oneline
-fate-sdi-mux-2160p60: REF = 3ffb4d0e13eeb3515bc47b1da183540a
+fate-sdi-mux-2160p60: REF = 42adeaa6f42d447a9b2721a4f83b5c26
 
 
 # The muxer with audio: 0.4 seconds of testsrc of size $(1) at $(2) frames per second
@@ -186,7 +186,7 @@ fate-sdi-copy-480i59_94: CMD = sdi_copy $(call SDI_SRC_A,720x487,30000/1001,$(SD
 fate-sdi-copy-480i59_94: CMP = oneline
 fate-sdi-copy-480i59_94: REF = $(SDI_REF_A_480I59_94)
 
-SDI_REF_A_1080P23_98 = 2872dd0cf7e720b71199a0f82004157c
+SDI_REF_A_1080P23_98 = 99ec37f5905441f1e85d6a693b422c15
 FATE_SDI_A += fate-sdi-audio-1080p23_98
 fate-sdi-audio-1080p23_98: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,24000/1001,$(SDI_VF_P),stereo,,HD1080p) -f sdi md5:
 fate-sdi-audio-1080p23_98: CMP = oneline
@@ -196,7 +196,7 @@ fate-sdi-copy-1080p23_98: CMD = sdi_copy $(call SDI_SRC_A,1920x1080,24000/1001,$
 fate-sdi-copy-1080p23_98: CMP = oneline
 fate-sdi-copy-1080p23_98: REF = $(SDI_REF_A_1080P23_98)
 
-SDI_REF_A_1080P29_97 = d68b1628840740780523e2c40fadc33b
+SDI_REF_A_1080P29_97 = d5ba3b42c7dfe406e2566cf8e49ceff9
 FATE_SDI_A += fate-sdi-audio-1080p29_97
 fate-sdi-audio-1080p29_97: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,30000/1001,$(SDI_VF_P),stereo,,HD1080p) -f sdi md5:
 fate-sdi-audio-1080p29_97: CMP = oneline
@@ -206,7 +206,7 @@ fate-sdi-copy-1080p29_97: CMD = sdi_copy $(call SDI_SRC_A,1920x1080,30000/1001,$
 fate-sdi-copy-1080p29_97: CMP = oneline
 fate-sdi-copy-1080p29_97: REF = $(SDI_REF_A_1080P29_97)
 
-SDI_REF_A_1080P30 = aeddd5923d84a90e753fe23bd71f7eb9
+SDI_REF_A_1080P30 = e48d3d49c18835af7d6233327d692fb7
 FATE_SDI_A += fate-sdi-audio-1080p30
 fate-sdi-audio-1080p30: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,30,$(SDI_VF_P),stereo,,HD1080p) -f sdi md5:
 fate-sdi-audio-1080p30: CMP = oneline
@@ -216,7 +216,7 @@ fate-sdi-copy-1080p30: CMD = sdi_copy $(call SDI_SRC_A,1920x1080,30,$(SDI_VF_P),
 fate-sdi-copy-1080p30: CMP = oneline
 fate-sdi-copy-1080p30: REF = $(SDI_REF_A_1080P30)
 
-SDI_REF_A_1080I59_94 = f711c7d740a2419990fd46e30d9cbb80
+SDI_REF_A_1080I59_94 = c48f5b8e6734c2fc79a55d09704c4f7c
 FATE_SDI_A += fate-sdi-audio-1080i59_94
 fate-sdi-audio-1080i59_94: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,30000/1001,$(SDI_VF_I),stereo,,HD1080i) -f sdi md5:
 fate-sdi-audio-1080i59_94: CMP = oneline
@@ -226,7 +226,7 @@ fate-sdi-copy-1080i59_94: CMD = sdi_copy $(call SDI_SRC_A,1920x1080,30000/1001,$
 fate-sdi-copy-1080i59_94: CMP = oneline
 fate-sdi-copy-1080i59_94: REF = $(SDI_REF_A_1080I59_94)
 
-SDI_REF_A_1080P59_94 = acf33a5fa8ae518e26873d4e39876ecc
+SDI_REF_A_1080P59_94 = e447773783d26aae4ac0457a13011edf
 FATE_SDI_A += fate-sdi-audio-1080p59_94
 fate-sdi-audio-1080p59_94: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,60000/1001,$(SDI_VF_P),stereo,,3GA1080p) -f sdi md5:
 fate-sdi-audio-1080p59_94: CMP = oneline
@@ -270,11 +270,11 @@ fate-sdi-audio-16ch-576i50: REF = e27d7ef4e30c726743a5375a228f9847
 FATE_SDI_A += fate-sdi-audio-8ch-1080i50
 fate-sdi-audio-8ch-1080i50: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,25,$(SDI_VF_I),7.1,,HD1080i) -f sdi md5:
 fate-sdi-audio-8ch-1080i50: CMP = oneline
-fate-sdi-audio-8ch-1080i50: REF = 4fe059eb1369d8631a6b0684e21d6b7f
+fate-sdi-audio-8ch-1080i50: REF = 8a5c12cd36406f681e2296048de6d8cd
 FATE_SDI_A += fate-sdi-audio-16ch-1080i50
 fate-sdi-audio-16ch-1080i50: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,25,$(SDI_VF_I),hexadecagonal,,HD1080i) -f sdi md5:
 fate-sdi-audio-16ch-1080i50: CMP = oneline
-fate-sdi-audio-16ch-1080i50: REF = 6ca9a4e4e98788ad72d71572db1f5b45
+fate-sdi-audio-16ch-1080i50: REF = efcba9a2ecf3aeabf7f52675e3da24d2
 
 # A round trip through the demuxer: the images and the audio, with their timestamps.
 FATE_SDI_RT += fate-sdi-roundtrip-480i59_94
@@ -294,7 +294,7 @@ SDI_SRC_A_4K = -f lavfi -i testsrc=s=3840x2160:r=$(1) -f lavfi -i sine=r=48000:f
                -c:v wrapped_avframe -c:a pcm_s24le -flags +bitexact -fflags +bitexact \
                -sdi_standard $(2)
 
-SDI_REF_A_2160P29_97 = 608f8e0c21eb813edb25ea1a2077d10b
+SDI_REF_A_2160P29_97 = 0f311611d868ba823cf16f4031ba8986
 FATE_SDI_A += fate-sdi-audio-2160p29_97
 fate-sdi-audio-2160p29_97: CMD = ffmpeg $(call SDI_SRC_A_4K,30000/1001,6G2160p) -f sdi md5:
 fate-sdi-audio-2160p29_97: CMP = oneline
@@ -304,7 +304,7 @@ fate-sdi-copy-2160p29_97: CMD = sdi_copy $(call SDI_SRC_A_4K,30000/1001,6G2160p)
 fate-sdi-copy-2160p29_97: CMP = oneline
 fate-sdi-copy-2160p29_97: REF = $(SDI_REF_A_2160P29_97)
 
-SDI_REF_A_2160P59_94 = 5b2d4de4869e9a999cfa14dd2da57b1c
+SDI_REF_A_2160P59_94 = 59519721144b31c49ad9cf3b22984cc9
 FATE_SDI_A += fate-sdi-audio-2160p59_94
 fate-sdi-audio-2160p59_94: CMD = ffmpeg $(call SDI_SRC_A_4K,60000/1001,12G2160p) -f sdi md5:
 fate-sdi-audio-2160p59_94: CMP = oneline
@@ -322,11 +322,11 @@ fate-sdi-roundtrip-2160p59_94: CMD = sdi_roundtrip $(call SDI_SRC_A_4K,60000/100
 FATE_SDI_A += fate-sdi-nocrc-1080i59_94
 fate-sdi-nocrc-1080i59_94: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,30000/1001,$(SDI_VF_I),stereo,,HD1080i) -calc_crc 0 -f sdi md5:
 fate-sdi-nocrc-1080i59_94: CMP = oneline
-fate-sdi-nocrc-1080i59_94: REF = 7214d193b0f57499bc29c711a3d87720
+fate-sdi-nocrc-1080i59_94: REF = ffaa0722af94abddcfa1d5fa2e9e4c67
 FATE_SDI_A += fate-sdi-nocrc-2160p59_94
 fate-sdi-nocrc-2160p59_94: CMD = ffmpeg $(call SDI_SRC_A_4K,60000/1001,12G2160p) -calc_crc 0 -f sdi md5:
 fate-sdi-nocrc-2160p59_94: CMP = oneline
-fate-sdi-nocrc-2160p59_94: REF = b58a734b365039e7e788b62079f33be0
+fate-sdi-nocrc-2160p59_94: REF = a083ba8872f37b4fbeddc8019a2115ab
 
 # Frames without the file header, read back with the standard given.
 FATE_SDI_RT += fate-sdi-noheader-1080i59_94
@@ -337,13 +337,13 @@ fate-sdi-noheader-1080i59_94: CMD = sdi_roundtrip_noheader HD1080i29_97 $(call S
 # chooses level B only when asked; the round trip, field 1 and field 2 of
 # each frame with the audio each carries; an odd number of pictures, whose last frame
 # gets a black field 2; and frames without the header.
-SDI_REF_B_1080P50 = 416a99d5a32798ec538e90821753238d
+SDI_REF_B_1080P50 = 453a2236510f98640a4751b1d6837074
 FATE_SDI_A += fate-sdi-audio-1080p50b
 fate-sdi-audio-1080p50b: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,50,$(SDI_VF_P),stereo,,3GB1080p) -f sdi md5:
 fate-sdi-audio-1080p50b: CMP = oneline
 fate-sdi-audio-1080p50b: REF = $(SDI_REF_B_1080P50)
 
-SDI_REF_B_1080P59_94 = cd5f45aaeac30c9557171bc3d442b7c0
+SDI_REF_B_1080P59_94 = 2c8d66a38a4cacb3c5c2e8fe9874adc7
 FATE_SDI_A += fate-sdi-audio-1080p59_94b
 fate-sdi-audio-1080p59_94b: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,60000/1001,$(SDI_VF_P),stereo,,3GB1080p) -f sdi md5:
 fate-sdi-audio-1080p59_94b: CMP = oneline
@@ -356,7 +356,7 @@ fate-sdi-copy-1080p59_94b: REF = $(SDI_REF_B_1080P59_94)
 FATE_SDI_A += fate-sdi-audio-1080p60b
 fate-sdi-audio-1080p60b: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,60,$(SDI_VF_P),stereo,,3GB1080p) -f sdi md5:
 fate-sdi-audio-1080p60b: CMP = oneline
-fate-sdi-audio-1080p60b: REF = 20766b1b267c36d6e54381b948f9d920
+fate-sdi-audio-1080p60b: REF = 0fe09da802f1f6fec2a73f9c19b74b75
 
 FATE_SDI_RT += fate-sdi-roundtrip-1080p50b
 fate-sdi-roundtrip-1080p50b: CMD = sdi_roundtrip $(call SDI_SRC_A,1920x1080,50,$(SDI_VF_P),stereo,,3GB1080p)
@@ -372,7 +372,7 @@ SDI_VF_I_420 = setfield=tff,scale,format=yuv420p
 FATE_SDI_A += fate-sdi-scale-1080i50
 fate-sdi-scale-1080i50: CMD = ffmpeg $(call SDI_SRC_A,1280x720,25,$(SDI_VF_I_420),stereo,,HD1080i) -f sdi md5:
 fate-sdi-scale-1080i50: CMP = oneline
-fate-sdi-scale-1080i50: REF = f6f288a69797b288060dcb589c20f18f
+fate-sdi-scale-1080i50: REF = e6d261bea242036f25f7f617c74d8023
 
 
 # The images in the formats the builder takes as they are, and as v210: the same 10-bit
@@ -402,7 +402,7 @@ fate-sdi-copy-v210-1080i59_94: CMD = sdi_copy_v210 $(call SDI_SRC_A,1920x1080,30
 fate-sdi-copy-v210-1080i59_94: CMP = oneline
 fate-sdi-copy-v210-1080i59_94: REF = $(SDI_REF_A_1080I59_94)
 
-SDI_REF_8_1080I59_94 = 93f93d5585510f161421f2e5e1cc1ef9
+SDI_REF_8_1080I59_94 = 7b2bce3e8caab6713c648d7f64c1fec4
 FATE_SDI_PIX += fate-sdi-yuv422p-1080i59_94
 fate-sdi-yuv422p-1080i59_94: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,30000/1001,$(SDI_VF_I_8),stereo,,HD1080i) -f sdi md5:
 fate-sdi-yuv422p-1080i59_94: CMP = oneline
