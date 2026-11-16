@@ -413,6 +413,41 @@ fate-sdi-uyvy422-1080i59_94: CMD = ffmpeg $(call SDI_SRC_A,1920x1080,30000/1001,
 fate-sdi-uyvy422-1080i59_94: CMP = oneline
 fate-sdi-uyvy422-1080i59_94: REF = $(SDI_REF_8_1080I59_94)
 
+# The colour of each frame goes into the payload ID, and the demuxer reads it back
+# (CDTAPI's plan 0043): HLG and BT.2020 in 1080i50 and in 1080p50 on 3G level B, whose
+# two pictures each carry a payload ID, PQ in full range in 2160p50, 16:9 in
+# 625 and 525 lines, BT.601 on 1080i50, which the payload ID cannot carry and gives way
+# to BT.709, and a v210 stream, which has only the stream's colour.
+SDI_COLOUR_SRC = -f lavfi -i testsrc=s=$(1):r=$(2) -t $(3) -vf $(4),scale,format=yuv422p10le \
+                 -c:v wrapped_avframe -flags +bitexact -fflags +bitexact
+SDI_COLOUR_HLG = setparams=color_trc=arib-std-b67:color_primaries=bt2020:colorspace=bt2020nc
+SDI_COLOUR_VF_HLG = setfield=tff,$(SDI_COLOUR_HLG)
+SDI_COLOUR_VF_PQ = setparams=color_trc=smpte2084:color_primaries=bt2020:colorspace=bt2020nc:range=pc
+SDI_COLOUR_VF_625 = setfield=tff,setsar=64/45
+SDI_COLOUR_VF_525 = setfield=tff,setsar=32/27
+SDI_COLOUR_VF_601 = setfield=tff,setparams=color_primaries=smpte170m:color_trc=bt709
+
+FATE_SDI_COLOUR += fate-sdi-colour-hlg-1080i50
+fate-sdi-colour-hlg-1080i50: CMD = sdi_colour $(call SDI_COLOUR_SRC,1920x1080,25,0.08,$(SDI_COLOUR_VF_HLG)) -sdi_standard HD1080i
+
+FATE_SDI_COLOUR += fate-sdi-colour-hlg-1080p50b
+fate-sdi-colour-hlg-1080p50b: CMD = sdi_colour $(call SDI_COLOUR_SRC,1920x1080,50,0.08,$(SDI_COLOUR_HLG)) -sdi_standard 3GB1080p
+
+FATE_SDI_COLOUR += fate-sdi-colour-pq-full-2160p50
+fate-sdi-colour-pq-full-2160p50: CMD = sdi_colour $(call SDI_COLOUR_SRC,3840x2160,50,0.04,$(SDI_COLOUR_VF_PQ)) -sdi_standard 12G2160p
+
+FATE_SDI_COLOUR += fate-sdi-colour-wide-576i50
+fate-sdi-colour-wide-576i50: CMD = sdi_colour $(call SDI_COLOUR_SRC,720x576,25,0.08,$(SDI_COLOUR_VF_625)) -sdi_standard SD576i
+
+FATE_SDI_COLOUR += fate-sdi-colour-wide-480i59_94
+fate-sdi-colour-wide-480i59_94: CMD = sdi_colour $(call SDI_COLOUR_SRC,720x480,30000/1001,0.08,$(SDI_COLOUR_VF_525)) -sdi_standard SD480i
+
+FATE_SDI_COLOUR += fate-sdi-colour-bt601-1080i50
+fate-sdi-colour-bt601-1080i50: CMD = sdi_colour $(call SDI_COLOUR_SRC,1920x1080,25,0.08,$(SDI_COLOUR_VF_601)) -sdi_standard HD1080i
+
+FATE_SDI_COLOUR += fate-sdi-colour-v210-1080i50
+fate-sdi-colour-v210-1080i50: CMD = sdi_colour -f lavfi -i testsrc=s=1920x1080:r=25 -t 0.08 -vf $(SDI_COLOUR_VF_HLG),scale,format=yuv422p10le -c:v v210 -flags +bitexact -fflags +bitexact -sdi_standard HD1080i
+
 SDI_A_DEPS = SDI_MUXER LAVFI_INDEV TESTSRC_FILTER SINE_FILTER SETFIELD_FILTER SCALE_FILTER \
              FORMAT_FILTER ARESAMPLE_FILTER AFORMAT_FILTER SETTB_FILTER ASETTB_FILTER \
              WRAPPED_AVFRAME_ENCODER PCM_S24LE_ENCODER MD5_PROTOCOL
@@ -420,6 +455,8 @@ FATE_SDI_A-$(call ALLYES, $(SDI_A_DEPS) SDI_DEMUXER) += $(FATE_SDI_A)
 FATE_SDI_A-$(call ALLYES, $(SDI_A_DEPS) SDI_DEMUXER V210_ENCODER) += $(FATE_SDI_PIX)
 FATE_SDI_A-$(call ALLYES, $(SDI_A_DEPS) SDI_DEMUXER WRAPPED_AVFRAME_DECODER \
              RAWVIDEO_ENCODER PCM_S24LE_DECODER FRAMEMD5_MUXER) += $(FATE_SDI_RT)
+FATE_SDI_A-$(call ALLYES, $(SDI_A_DEPS) SDI_DEMUXER WRAPPED_AVFRAME_DECODER \
+             SETPARAMS_FILTER SETSAR_FILTER V210_ENCODER FFPROBE) += $(FATE_SDI_COLOUR)
 
 FATE_SDI += $(FATE_SDI-yes) $(FATE_SDI_A-yes)
 FATE-$(call ALLYES, SDI_MUXER LAVFI_INDEV TESTSRC_FILTER SETFIELD_FILTER SCALE_FILTER FORMAT_FILTER WRAPPED_AVFRAME_ENCODER MD5_PROTOCOL) += $(FATE_SDI)

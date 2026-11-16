@@ -1141,6 +1141,14 @@ samples at 48 kHz, so that a copy keeps every timestamp exact. At 29.97 and
 audio cadence, which the frame carries, so that the timestamps follow the
 samples the frames hold.
 
+Each frame's @code{color_trc}, @code{color_primaries}, @code{colorspace},
+@code{color_range} and sample aspect ratio come from its payload ID of SMPTE ST
+352, and the video stream's from the first frame's: HLG is @samp{arib-std-b67}
+and PQ @samp{smpte2084}. A frame without a payload ID has them unspecified, as
+has a colorimetry that SMPTE ST 2048-1's Color VANC packet describes, which is
+logged once. In SD the sample aspect ratio is 16:15 or 64:45 in 625 lines, and
+8:9 or 32:27 in 525, for 4:3 or 16:9.
+
 A file of 3G level B holds two pictures in each frame, field 1 and field 2 of
 a 3G interface of half the picture rate. The demuxer gives them one after the
 other, each with its own image and the audio it carries, and the video counts

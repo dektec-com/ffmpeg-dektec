@@ -128,6 +128,23 @@ fate-dektec-sdi-in-1080p50b: CMD = dektec_sdi_loop 1080P50B 3GB1080p50 10 $(call
 FATE_DEKTEC_LOOP += fate-dektec-sdi-in-1080p59_94b
 fate-dektec-sdi-in-1080p59_94b: CMD = dektec_sdi_loop 1080P59_94B 3GB1080p59_94 10 $(call DEKTEC_SRC,1920x1080,60000/1001,$(DEKTEC_VF_P))
 
+# The colour of each frame goes out through port 3 in the payload ID, and the input on
+# port 1 reads it back, the stream's from the payload ID it detected (CDTAPI's plan
+# 0043): HLG and BT.2020 in 1080i50, and PQ in full range in 1080p50 on 3G level A. Not
+# 3G level B: the emulated sink completes the lone field 2 the output starts with by a
+# black field 1 of its own, with the standard's default signalling, which the input
+# then reads first.
+DEKTEC_COLOUR_HLG = setparams=color_trc=arib-std-b67:color_primaries=bt2020:colorspace=bt2020nc
+DEKTEC_COLOUR_PQ = setparams=color_trc=smpte2084:color_primaries=bt2020:colorspace=bt2020nc:range=pc
+DEKTEC_COLOUR_VF_HLG = setfield=tff,$(DEKTEC_COLOUR_HLG),scale,format=yuv422p10le
+DEKTEC_COLOUR_VF_PQ = $(DEKTEC_COLOUR_PQ),scale,format=yuv422p10le
+
+FATE_DEKTEC_COLOUR += fate-dektec-sdi-colour-hlg-1080i50
+fate-dektec-sdi-colour-hlg-1080i50: CMD = dektec_sdi_colour 1080I50 HD1080i $(call DEKTEC_SRC,1920x1080,25,$(DEKTEC_COLOUR_VF_HLG))
+
+FATE_DEKTEC_COLOUR += fate-dektec-sdi-colour-pq-1080p50
+fate-dektec-sdi-colour-pq-1080p50: CMD = dektec_sdi_colour 1080P50 3GA1080p $(call DEKTEC_SRC,1920x1080,50,$(DEKTEC_COLOUR_VF_PQ))
+
 # The sink of a level-B output read with the sdi demuxer, and a file of the sdi muxer
 # received on an input: the frames of the interface are the same on both sides.
 FATE_DEKTEC_DEMUX += fate-dektec-sdi-out-demux-1080p50b
@@ -160,6 +177,8 @@ FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV SDI_MUXER FRAMEMD5_MUXER $(DEKTEC_SRC_DE
 FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV SDI_MUXER SDI_DEMUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_COPY)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_OUTDEV SDI_DEMUXER FRAMEMD5_MUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_DEMUX)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV DEKTEC_OUTDEV FRAMEMD5_MUXER $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_LOOP)
+FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV DEKTEC_OUTDEV SETPARAMS_FILTER FFPROBE \
+                           $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_COLOUR)
 FATE_DEKTEC-$(call ALLYES, DEKTEC_INDEV DEKTEC_OUTDEV SDI_MUXER FRAMEMD5_MUXER V210_ENCODER V210_DECODER \
                            $(DEKTEC_SRC_DEPS)) += $(FATE_DEKTEC_V210)
 

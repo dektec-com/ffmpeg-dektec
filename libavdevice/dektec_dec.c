@@ -571,6 +571,8 @@ static int inpchannel_read_header(AVFormatContext *s)
     ret = ff_sdi_unpacker_add_video_stream(context->unpacker, s, 0);
     if (ret < 0)
         return ret;
+    // The stream's colour from the payload ID detected; without one, from the first frame
+    ff_sdi_unpacker_set_vpid(context->unpacker, context->detected_standard.Vpid);
 
     // Receiving starts once the parser is ready to take the frames: a 2160p frame fills
     // much of the card's buffer, which the time setting up the parser took would make

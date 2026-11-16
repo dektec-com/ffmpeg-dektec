@@ -286,6 +286,22 @@ sdi_roundtrip_noheader(){
         -map 0 -c:v rawvideo -c:a pcm_s24le
 }
 
+# The colour properties and sample aspect ratio that sdi_colour and dektec_sdi_colour
+# list, of the video stream and of each frame.
+SDI_COLOUR_ENTRIES=stream=sample_aspect_ratio,color_range,color_space,color_transfer,color_primaries:frame=sample_aspect_ratio,color_range,color_space,color_transfer,color_primaries
+
+# sdi_colour ARGS... makes an .sdi file from ARGS with the sdi muxer, and lists the
+# colour properties and sample aspect ratio the sdi demuxer reads back from its payload
+# ID: those of the video stream, and of its first two frames.
+sdi_colour(){
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    ffmpeg -y "$@" -f sdi $(target_path $srcfile) || return
+    run ffprobe${PROGSUF}${EXECSUF} -bitexact -v error -select_streams v \
+        -read_intervals %+#2 -show_entries $SDI_COLOUR_ENTRIES -of compact \
+        $(target_path $srcfile)
+}
+
 # A path for an environment variable, which MSYS2 does not translate for a Windows
 # program as it translates its arguments.
 dektec_env_path(){
@@ -352,6 +368,25 @@ dektec_sdi_copy_out_std(){
         ffmpeg -i $(target_path $srcfile) -c copy -sdi_standard $standard \
         -f dektec 9217800001:$port || return
     do_md5sum $sinkfile | awk '{print $1}'
+}
+
+# dektec_sdi_colour VIDSTD STANDARD ARGS... sends ARGS' output in the sdi standard
+# STANDARD through port 3 into a file, plays that file on port 1 as the video standard
+# VIDSTD, and lists the colour properties and sample aspect ratio the input gives: those
+# of the video stream, from the payload ID it detected, and of the first two frames.
+dektec_sdi_colour(){
+    vidstd=$1
+    standard=$2
+    shift 2
+    srcfile="${outdir}/${test}.sdi"
+    cleanfiles="$cleanfiles $srcfile"
+    rm -f $srcfile
+    CDTAPI_SIM=1 CDTAPI_SIM_SDI_SINK=3:$(dektec_env_path $srcfile) \
+        ffmpeg "$@" -sdi_standard $standard -f dektec 9217800001:3 || return
+    CDTAPI_SIM=1 CDTAPI_SIM_REALTIME=0 CDTAPI_SIM_SDI_SOURCE=1:$vidstd:$(dektec_env_path $srcfile) \
+        run ffprobe${PROGSUF}${EXECSUF} -bitexact -v error -select_streams v \
+        -read_intervals %+#2 -show_entries $SDI_COLOUR_ENTRIES -of compact \
+        -f dektec 9217800001:1
 }
 
 # dektec_sdi_loop VIDSTD STANDARD FRAMES ARGS... sends ARGS' output in the sdi standard

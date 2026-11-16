@@ -477,7 +477,10 @@ CDTAPI's SDI parser, without a copy. It gives what the @code{sdi} demuxer gives:
 a video stream in @code{yuv422p10}, coded with @code{wrapped_avframe}, or in
 @code{v210} with the @option{v210} option, and an
 audio stream in @code{pcm_s24le} in as many channels as the frames carry, up to
-16; the video counts in frames and the audio in samples at 48 kHz.
+16; the video counts in frames and the audio in samples at 48 kHz. Each
+frame's colour properties and sample aspect ratio come from its payload ID, as
+the @code{sdi} demuxer gives them, and the video stream's from the payload ID
+the card detected when the input opened.
 
 On a port that receives 3G level B, the card holds each of the two pictures of
 an interface frame as a frame of its own, and the input gives each picture as

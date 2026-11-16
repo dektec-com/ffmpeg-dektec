@@ -3361,6 +3361,19 @@ standard's picture size, and goes into the frames as it is: SDI files from and
 to MOV or MXF of @code{v210} need no conversion. An interlaced standard needs
 top field first video, e.g. with the @code{setfield=tff} filter.
 
+The payload ID says what the video is: its transfer characteristic, its
+colorimetry, Y'CbCr or ICtCp, its range and its aspect ratio. Each comes from
+the frame's @code{color_trc}, @code{color_primaries}, @code{colorspace},
+@code{color_range} and sample aspect ratio where it is specified, else from the
+video stream's, else it is the standard's default: SDR, BT.709 (BT.601 in SD,
+BT.2020 in 2160p), Y'CbCr, narrow range and 16:9 (4:3 in SD). HLG is
+@samp{arib-std-b67} and PQ @samp{smpte2084}, with the primaries @samp{bt2020};
+the @code{setparams} filter sets them. A value the standard's payload ID cannot
+carry gives way to its default, with a warning: in SD all but the aspect ratio,
+in 720p all of them, and from 1080 lines up BT.601 and 4:3. A @code{v210} stream
+has only the stream's colour, which @command{ffmpeg} takes from the first frame
+it encodes.
+
 The audio stream is @code{pcm_s24le} or @code{pcm_s32le} at 48 kHz, and is
 embedded in the horizontal ancillary data: up to 16 channels, in groups of
 four. The channels of a group that the stream does not fill carry silence
@@ -3441,6 +3454,13 @@ ffmpeg -i input.mxf -c:v wrapped_avframe -c:a pcm_s24le -ar 48000 -ac 2 out.sdi
 Write a second of 1080p50 test pattern as 3G level B:
 @example
 ffmpeg -f lavfi -i testsrc=size=1920x1080:rate=50 -t 1 -pix_fmt yuv422p10le -f sdi -sdi_standard 3GB1080p out.sdi
+@end example
+
+@item
+Write an HLG video in BT.2020 to an SDI file, whose payload ID then says HLG
+and BT.2020, also when the input file does not say so:
+@example
+ffmpeg -i hlg.mov -vf setparams=color_trc=arib-std-b67:color_primaries=bt2020:colorspace=bt2020nc -c:v wrapped_avframe out.sdi
 @end example
 @end itemize
 

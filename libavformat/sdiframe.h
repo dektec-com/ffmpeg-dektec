@@ -85,6 +85,16 @@ int ff_sdi_unpacker_add_video_stream(SdiUnpacker *unpacker, AVFormatContext *s,
                                      int64_t nb_frames);
 
 /**
+ * Set the video stream's colour properties and sample aspect ratio from the signalling
+ * of vpid, the payload ID an input detected, with byte 1 in the least significant bits
+ * as DtDetVidStd has it. Without it, the first frame with a payload ID sets them. A
+ * vpid CDTAPI does not know sets nothing.
+ *
+ * @return 0
+ */
+int ff_sdi_unpacker_set_vpid(SdiUnpacker *unpacker, uint32_t vpid);
+
+/**
  * Add the audio stream to s: nb_channels of 24-bit PCM at 48 kHz, which count in
  * samples. A frame with fewer channels gives silence on the others, one with more loses
  * those beyond.
@@ -97,7 +107,8 @@ int ff_sdi_unpacker_add_audio_stream(SdiUnpacker *unpacker, AVFormatContext *s,
 /**
  * Take apart the frame the view describes: its image goes into pkt, with frame_number
  * as its timestamp, and its audio waits for ff_sdi_unpacker_audio(). The view may point
- * elsewhere once this returns.
+ * elsewhere once this returns. A wrapped frame takes its colour properties and sample
+ * aspect ratio from the frame's payload ID; a frame without one has them unspecified.
  *
  * In 3G level B the view describes one picture, field 1 or field 2 of a frame of the
  * interface, and frame_number counts pictures. The picture's timestamp is its place:
@@ -193,6 +204,11 @@ int ff_sdi_packer_ready(SdiPacker *packer, int flush);
  * Build the next frame, which ff_sdi_packer_ready() said is ready, into the room the
  * view describes. A frame the builder refuses is built black and silent, so that room a
  * channel lent still holds a frame.
+ *
+ * The payload ID carries the image's colour: its transfer characteristic, primaries,
+ * colour space, range and display aspect ratio, each from the frame where it is
+ * specified, else from the video stream, else the standard's default. A value the
+ * standard cannot carry gives way to its default, which is logged once.
  *
  * @return 0, or a negative error code
  */

@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <limits.h>
 #include <string.h>
 
 #include "libavcodec/codec_id.h"
@@ -101,6 +102,192 @@ static int64_t frame_first_sample(AVRational frame_rate, int64_t frame)
                           AV_ROUND_NEAR_INF);
 }
 
+/* ======================== The signalling of the payload ID ======================== */
+
+/*
+ * CDTAPI's builder writes what a frame's video is into its payload ID (SMPTE ST 352):
+ * the transfer characteristic, the colorimetry, the aspect ratio, Y'CbCr or ICtCp and
+ * the range. These map FFmpeg's colour properties to that signalling and back. A value
+ * FFmpeg leaves unspecified is the standard's default on the way out, and a value the
+ * payload ID does not know stays unspecified on the way in.
+ */
+
+static DtSdiTransfer transfer_from(enum AVColorTransferCharacteristic trc)
+{
+    switch (trc) {
+    case AVCOL_TRC_UNSPECIFIED:
+    case AVCOL_TRC_RESERVED0:
+    case AVCOL_TRC_RESERVED:     return DT_SDI_TRANSFER_DEFAULT;
+    case AVCOL_TRC_ARIB_STD_B67: return DT_SDI_TRANSFER_HLG;
+    case AVCOL_TRC_SMPTE2084:    return DT_SDI_TRANSFER_PQ;
+    case AVCOL_TRC_BT709:
+    case AVCOL_TRC_GAMMA22:
+    case AVCOL_TRC_GAMMA28:
+    case AVCOL_TRC_SMPTE170M:
+    case AVCOL_TRC_SMPTE240M:
+    case AVCOL_TRC_BT1361_ECG:
+    case AVCOL_TRC_BT2020_10:
+    case AVCOL_TRC_BT2020_12:    return DT_SDI_TRANSFER_SDR;
+    default:                     return DT_SDI_TRANSFER_UNSPECIFIED;
+    }
+}
+
+static DtSdiColorimetry colorimetry_from(enum AVColorPrimaries primaries)
+{
+    switch (primaries) {
+    case AVCOL_PRI_UNSPECIFIED:
+    case AVCOL_PRI_RESERVED0:
+    case AVCOL_PRI_RESERVED:  return DT_SDI_COLORIMETRY_DEFAULT;
+    case AVCOL_PRI_BT709:     return DT_SDI_COLORIMETRY_BT709;
+    case AVCOL_PRI_BT2020:    return DT_SDI_COLORIMETRY_BT2020;
+    case AVCOL_PRI_SMPTE170M:
+    case AVCOL_PRI_BT470BG:   return DT_SDI_COLORIMETRY_BT601;
+    default:                  return DT_SDI_COLORIMETRY_UNKNOWN;
+    }
+}
+
+static DtSdiLumaChroma luma_chroma_from(enum AVColorSpace space)
+{
+    switch (space) {
+    case AVCOL_SPC_UNSPECIFIED:
+    case AVCOL_SPC_RESERVED: return DT_SDI_LUMACHROMA_DEFAULT;
+    case AVCOL_SPC_ICTCP:    return DT_SDI_LUMACHROMA_ICTCP;
+    default:                 return DT_SDI_LUMACHROMA_YCBCR;
+    }
+}
+
+static DtSdiRange range_from(enum AVColorRange range)
+{
+    switch (range) {
+    case AVCOL_RANGE_MPEG: return DT_SDI_RANGE_NARROW;
+    case AVCOL_RANGE_JPEG: return DT_SDI_RANGE_FULL;
+    default:               return DT_SDI_RANGE_DEFAULT;
+    }
+}
+
+/* The sample aspect ratios FFmpeg gives a 720-wide SD picture of 4:3 and of 16:9, as
+ * its DV demuxer does: in 625 lines 16:15 and 64:45, in 525 lines 8:9 and 32:27. */
+static AVRational sd_sar(int lines_525, DtSdiAspect aspect)
+{
+    if (aspect == DT_SDI_ASPECT_16X9)
+        return lines_525 ? (AVRational){ 32, 27 } : (AVRational){ 64, 45 };
+    return lines_525 ? (AVRational){ 8, 9 } : (AVRational){ 16, 15 };
+}
+
+/* The aspect ratio of a picture of width x height with sample aspect ratio sar: 16:9 or
+ * 4:3 when its display aspect ratio is exactly that, or in SD when sar is the one
+ * sd_sar() gives for it, else the standard's default. */
+static DtSdiAspect aspect_from(AVRational sar, int width, int height)
+{
+    AVRational dar;
+
+    if (sar.num <= 0 || sar.den <= 0 || width <= 0 || height <= 0)
+        return DT_SDI_ASPECT_DEFAULT;
+    if (width == 720 && height < 720) {
+        for (int lines_525 = 0; lines_525 <= 1; lines_525++) {
+            if (!av_cmp_q(sar, sd_sar(lines_525, DT_SDI_ASPECT_16X9)))
+                return DT_SDI_ASPECT_16X9;
+            if (!av_cmp_q(sar, sd_sar(lines_525, DT_SDI_ASPECT_4X3)))
+                return DT_SDI_ASPECT_4X3;
+        }
+    }
+    av_reduce(&dar.num, &dar.den, (int64_t)sar.num * width, (int64_t)sar.den * height,
+              INT_MAX);
+    if (dar.num == 16 && dar.den == 9)
+        return DT_SDI_ASPECT_16X9;
+    if (dar.num == 4 && dar.den == 3)
+        return DT_SDI_ASPECT_4X3;
+    return DT_SDI_ASPECT_DEFAULT;
+}
+
+/* Whether the frames of info are SD, whose payload ID carries only the aspect ratio. */
+static int is_sd(const struct SdiInfo *info)
+{
+    return info->picture_height < 720;
+}
+
+/* Whether the frames of info are 720p, whose payload ID carries none of the fields. */
+static int is_720(const struct SdiInfo *info)
+{
+    return info->picture_height == 720;
+}
+
+/* The colour properties of a frame, as FFmpeg has them. */
+struct SdiColour {
+    enum AVColorTransferCharacteristic trc;
+    enum AVColorPrimaries primaries;
+    enum AVColorSpace space;
+    enum AVColorRange range;
+    AVRational sar;
+};
+
+/*
+ * The colour properties of a frame of info whose payload ID carries signalling s. A
+ * value the payload ID does not know is unspecified; *color_vanc is set when the
+ * colorimetry is that of SMPTE ST 2048-1's Color VANC packet.
+ */
+static void colour_of(const struct SdiInfo *info, const DtSdiVideoSignalling *s,
+                      struct SdiColour *c, int *color_vanc)
+{
+    const int lines_525 = info->picture_height < 500;
+
+    *color_vanc = s->Colorimetry == DT_SDI_COLORIMETRY_COLOR_VANC;
+    switch (s->Colorimetry) {
+    case DT_SDI_COLORIMETRY_BT709:
+        c->primaries = AVCOL_PRI_BT709;
+        c->space = AVCOL_SPC_BT709;
+        break;
+    case DT_SDI_COLORIMETRY_BT2020:
+        c->primaries = AVCOL_PRI_BT2020;
+        c->space = AVCOL_SPC_BT2020_NCL;
+        break;
+    case DT_SDI_COLORIMETRY_BT601:
+        c->primaries = lines_525 ? AVCOL_PRI_SMPTE170M : AVCOL_PRI_BT470BG;
+        c->space = lines_525 ? AVCOL_SPC_SMPTE170M : AVCOL_SPC_BT470BG;
+        break;
+    default:
+        c->primaries = AVCOL_PRI_UNSPECIFIED;
+        c->space = AVCOL_SPC_UNSPECIFIED;
+        break;
+    }
+    if (s->LumaChroma == DT_SDI_LUMACHROMA_ICTCP)
+        c->space = AVCOL_SPC_ICTCP;
+
+    switch (s->Transfer) {
+    case DT_SDI_TRANSFER_HLG:
+        c->trc = AVCOL_TRC_ARIB_STD_B67;
+        break;
+    case DT_SDI_TRANSFER_PQ:
+        c->trc = AVCOL_TRC_SMPTE2084;
+        break;
+    case DT_SDI_TRANSFER_SDR:
+        c->trc = s->Colorimetry == DT_SDI_COLORIMETRY_BT2020 ? AVCOL_TRC_BT2020_10
+               : s->Colorimetry == DT_SDI_COLORIMETRY_BT601  ? AVCOL_TRC_SMPTE170M
+                                                             : AVCOL_TRC_BT709;
+        break;
+    default:
+        c->trc = AVCOL_TRC_UNSPECIFIED;
+        break;
+    }
+
+    c->range = s->Range == DT_SDI_RANGE_FULL     ? AVCOL_RANGE_JPEG
+             : s->Range == DT_SDI_RANGE_NARROW   ? AVCOL_RANGE_MPEG
+                                                 : AVCOL_RANGE_UNSPECIFIED;
+
+    // The sample aspect ratio that gives the picture the display aspect ratio; in SD the
+    // one FFmpeg gives a 720-wide picture
+    c->sar = (AVRational){ 0, 1 };
+    if (is_sd(info) && (s->Aspect == DT_SDI_ASPECT_16X9 || s->Aspect == DT_SDI_ASPECT_4X3)) {
+        c->sar = sd_sar(lines_525, s->Aspect);
+    } else if (s->Aspect == DT_SDI_ASPECT_16X9 || s->Aspect == DT_SDI_ASPECT_4X3) {
+        int dar_num = s->Aspect == DT_SDI_ASPECT_16X9 ? 16 : 4;
+        int dar_den = s->Aspect == DT_SDI_ASPECT_16X9 ? 9 : 3;
+
+        av_reduce(&c->sar.num, &c->sar.den, (int64_t)dar_num * info->picture_height,
+                  (int64_t)dar_den * info->picture_width, INT_MAX);
+    }
+}
+
 /* ======================== Taking frames apart ======================== */
 
 struct SdiUnpacker {
@@ -139,6 +326,10 @@ struct SdiUnpacker {
     int64_t audio_shift;        ///< added to every audio timestamp; see prepare_audio()
     int audio_started;          ///< whether audio_shift is set, by the first audio
     int warned_channels;        ///< whether a change in the number of channels was logged
+
+    AVStream *video_stream;     ///< the video stream
+    int stream_colour_set;      ///< whether its colour is set, from the Vpid or a frame
+    int logged_color_vanc;      ///< whether a frame with a Color VANC packet was logged
 };
 
 static void free_frame(void *opaque, uint8_t *data)
@@ -278,7 +469,65 @@ int ff_sdi_unpacker_add_video_stream(SdiUnpacker *unpacker, AVFormatContext *s,
     st->codecpar->field_order = info->scanning_method == SDI_I_PICT_I_TR ||
                                 info->scanning_method == SDI_I_PICT_P_TR
                                     ? AV_FIELD_TT : AV_FIELD_PROGRESSIVE;
+    unpacker->video_stream = st;
     return 0;
+}
+
+/* Set the video stream's colour from the signalling s, once: from the Vpid an input
+ * detected, or else from the first frame. */
+static void set_stream_colour(SdiUnpacker *u, const DtSdiVideoSignalling *s)
+{
+    AVCodecParameters *par;
+    struct SdiColour c;
+    int color_vanc;
+
+    if (u->stream_colour_set || !u->video_stream)
+        return;
+    u->stream_colour_set = 1;
+    colour_of(u->info, s, &c, &color_vanc);
+    par = u->video_stream->codecpar;
+    par->color_trc = c.trc;
+    par->color_primaries = c.primaries;
+    par->color_space = c.space;
+    par->color_range = c.range;
+    par->sample_aspect_ratio = c.sar;
+    u->video_stream->sample_aspect_ratio = c.sar;
+}
+
+int ff_sdi_unpacker_set_vpid(SdiUnpacker *unpacker, uint32_t vpid)
+{
+    DtSdiVideoSignalling s = { .Size = sizeof(s) };
+
+    if (DtSdiVideoSignalling_FromVpid(vpid, &s) != DTAPI_OK)
+        return 0;
+    set_stream_colour(unpacker, &s);
+    return 0;
+}
+
+/* The colour of the frame the view points at, for frame and, the first time, for the
+ * stream. A frame without a payload ID, or with one CDTAPI does not know, has none. */
+static void take_colour(SdiUnpacker *u, AVFrame *frame)
+{
+    DtSdiVideoSignalling s = { .Size = sizeof(s) };
+    struct SdiColour c;
+    int color_vanc;
+
+    if (DtSdiView_GetVideoSignalling(u->view, &s) != DTAPI_OK)
+        return;
+    set_stream_colour(u, &s);
+    colour_of(u->info, &s, &c, &color_vanc);
+    if (color_vanc && !u->logged_color_vanc) {
+        av_log(u->log_ctx, AV_LOG_INFO, "The colour is described by a Color VANC packet "
+               "(SMPTE ST 2048-1), which is not read\n");
+        u->logged_color_vanc = 1;
+    }
+    if (!frame)
+        return;
+    frame->color_trc = c.trc;
+    frame->color_primaries = c.primaries;
+    frame->colorspace = c.space;
+    frame->color_range = c.range;
+    frame->sample_aspect_ratio = c.sar;
 }
 
 /*
@@ -426,6 +675,8 @@ int ff_sdi_unpacker_parse(SdiUnpacker *unpacker, int64_t frame_number, AVPacket 
             av_packet_unref(pkt);
             return AVERROR_INVALIDDATA;
         }
+        // A v210 packet has no colour of its own; the stream has it
+        take_colour(u, NULL);
         goto image_done;
     }
 
@@ -463,6 +714,7 @@ int ff_sdi_unpacker_parse(SdiUnpacker *unpacker, int64_t frame_number, AVPacket 
         av_frame_free(&frame);
         return AVERROR_INVALIDDATA;
     }
+    take_colour(u, frame);
 
     pkt->buf = av_buffer_create((uint8_t *)frame, sizeof(*frame), free_frame, NULL, 0);
     if (!pkt->buf) {
@@ -555,6 +807,10 @@ struct SdiPacker {
 
     int cadence_length;         ///< the places of the standard's audio cadence, or 0
     int place;                  ///< the next frame's place in it, 0 for the builder's own
+
+    unsigned warned[5];         ///< per field of the signalling, the values that gave way
+                                ///< to the standard's default and were logged
+    int warned_constant_luminance; ///< whether BT.2020 constant luminance was logged
 };
 
 /* The builder's format of an FFmpeg pixel format it takes as it is, or
@@ -663,6 +919,78 @@ static int init_audio(SdiPacker *p, int nb_channels)
     return 0;
 }
 
+/* Log, once per field and value, that a value of the signalling gives way to the
+ * standard's default, since the standard's payload ID cannot carry it. */
+static void warn_gives_way(SdiPacker *p, int field, int value, const char *what)
+{
+    if (p->warned[field] & (1u << value))
+        return;
+    p->warned[field] |= 1u << value;
+    av_log(p->log_ctx, AV_LOG_WARNING, "%s cannot say %s; the payload ID carries the "
+           "standard's default instead\n", p->info->name, what);
+}
+
+/*
+ * Set the builder's signalling for the next frame from the frame's colour, field by
+ * field where it is specified, else from the video stream's, else the standard's
+ * default. frame is NULL for a v210 packet, which has only the stream's. The builder
+ * gives a value its standard cannot carry way to the default, which is logged here.
+ */
+static void set_signalling(SdiPacker *p, const AVFrame *frame)
+{
+    const AVCodecParameters *par = p->video_stream->codecpar;
+    DtSdiVideoSignalling s = { .Size = sizeof(s) };
+    enum AVColorSpace space;
+    AVRational sar = par->sample_aspect_ratio;
+    int width = par->width, height = par->height;
+
+    s.Transfer = transfer_from(frame && frame->color_trc != AVCOL_TRC_UNSPECIFIED
+                               ? frame->color_trc : par->color_trc);
+    s.Colorimetry = colorimetry_from(frame && frame->color_primaries != AVCOL_PRI_UNSPECIFIED
+                                     ? frame->color_primaries : par->color_primaries);
+    space = frame && frame->colorspace != AVCOL_SPC_UNSPECIFIED ? frame->colorspace
+                                                                : par->color_space;
+    s.LumaChroma = luma_chroma_from(space);
+    s.Range = range_from(frame && frame->color_range != AVCOL_RANGE_UNSPECIFIED
+                         ? frame->color_range : par->color_range);
+    if (frame && frame->sample_aspect_ratio.num > 0) {
+        sar = frame->sample_aspect_ratio;
+        width = frame->width;
+        height = frame->height;
+    }
+    s.Aspect = aspect_from(sar, width, height);
+
+    if ((space == AVCOL_SPC_BT2020_CL || space == AVCOL_SPC_CHROMA_DERIVED_CL) &&
+        !p->warned_constant_luminance) {
+        av_log(p->log_ctx, AV_LOG_WARNING, "The payload ID cannot say constant luminance; "
+               "it says Y'CbCr\n");
+        p->warned_constant_luminance = 1;
+    }
+
+    // What the standard's payload ID cannot carry: in SD all but the aspect ratio, in
+    // 720p every field, and from 1080 lines up BT.601 and 4:3
+    if (is_sd(p->info) || is_720(p->info)) {
+        if (s.Transfer != DT_SDI_TRANSFER_DEFAULT && s.Transfer != DT_SDI_TRANSFER_SDR)
+            warn_gives_way(p, 0, s.Transfer, "its transfer characteristic");
+        if (s.Colorimetry != DT_SDI_COLORIMETRY_DEFAULT &&
+            s.Colorimetry != (is_sd(p->info) ? DT_SDI_COLORIMETRY_BT601
+                                             : DT_SDI_COLORIMETRY_BT709))
+            warn_gives_way(p, 1, s.Colorimetry, "its colorimetry");
+        if (s.LumaChroma == DT_SDI_LUMACHROMA_ICTCP)
+            warn_gives_way(p, 2, s.LumaChroma, "ICtCp");
+        if (s.Range == DT_SDI_RANGE_FULL)
+            warn_gives_way(p, 3, s.Range, "full range");
+        if (is_720(p->info) && s.Aspect == DT_SDI_ASPECT_4X3)
+            warn_gives_way(p, 4, s.Aspect, "a 4:3 aspect ratio");
+    } else {
+        if (s.Colorimetry == DT_SDI_COLORIMETRY_BT601)
+            warn_gives_way(p, 1, s.Colorimetry, "BT.601 colorimetry");
+        if (s.Aspect == DT_SDI_ASPECT_4X3)
+            warn_gives_way(p, 4, s.Aspect, "a 4:3 aspect ratio");
+    }
+    DtSdiBuilder_SetVideoSignalling(p->builder, &s);
+}
+
 int ff_sdi_packer_alloc(SdiPacker **packer, void *log_ctx, const struct SdiInfo *info,
                         int threads, int checksums, AVStream *video_stream,
                         AVStream *audio_stream, int nb_channels)
@@ -721,6 +1049,9 @@ int ff_sdi_packer_alloc(SdiPacker **packer, void *log_ctx, const struct SdiInfo 
                                 p->stream_channels * p->bytes_per_sample : 0);
     if (!p->pair)
         return AVERROR(ENOMEM);
+    // A black frame before the first image, as an output of 3G level B starts with,
+    // carries the stream's colour
+    set_signalling(p, NULL);
     return 0;
 }
 
@@ -859,8 +1190,11 @@ int ff_sdi_packer_build(SdiPacker *packer)
                    p->image_pkt->size, stride * p->info->picture_height);
             ret = AVERROR_INVALIDDATA;
         }
+        set_signalling(p, NULL);
     } else {
         frame = (const AVFrame *)p->image_pkt->data;
+        // The colour is the frame's own, before any scaling
+        set_signalling(p, frame);
         if (p->scale_context) {
             ret = sws_scale_frame(p->scale_context, p->scale_frame, frame);
             frame = p->scale_frame;
